@@ -232,14 +232,29 @@ pub struct LinearConfig {
 pub struct UiConfig {
     /// Command used to open a worktree in an editor, e.g. "code", "cursor".
     pub editor_command: String,
+    /// Deck scene palette.
+    pub deck_palette: DeckPalette,
+    /// Place agents instantly and disable ambient animation.
+    pub reduce_motion: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             editor_command: "code".into(),
+            deck_palette: DeckPalette::Federation,
+            reduce_motion: false,
         }
     }
+}
+
+/// Which deck art palette to render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeckPalette {
+    #[serde(rename = "federation")]
+    Federation,
+    #[serde(rename = "dark-ops")]
+    DarkOps,
 }
 
 #[cfg(test)]
@@ -303,5 +318,20 @@ mod tests {
         assert_eq!(cfg.ui.editor_command, "code");
         let parsed: BridgeConfig = toml::from_str("[ui]\neditor_command = \"cursor\"\n").unwrap();
         assert_eq!(parsed.ui.editor_command, "cursor");
+    }
+
+    #[test]
+    fn ui_config_deck_defaults() {
+        let c = UiConfig::default();
+        assert_eq!(c.deck_palette, DeckPalette::Federation);
+        assert!(!c.reduce_motion);
+    }
+
+    #[test]
+    fn deck_palette_parses_from_toml() {
+        let c: BridgeConfig =
+            toml::from_str("[ui]\ndeck_palette = \"dark-ops\"\nreduce_motion = true\n").unwrap();
+        assert_eq!(c.ui.deck_palette, DeckPalette::DarkOps);
+        assert!(c.ui.reduce_motion);
     }
 }

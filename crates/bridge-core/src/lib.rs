@@ -16,8 +16,8 @@ pub mod wire;
 
 pub use commands::{BridgeCommand, BudgetExtension};
 pub use config::{
-    BridgeConfig, BudgetConfig, ClaudeConfig, ConfigError, LinearConfig, MergeConfig, MergeMode,
-    TacticalConfig, UiConfig, WorktreeConfig,
+    BridgeConfig, BudgetConfig, ClaudeConfig, ConfigError, DeckPalette, LinearConfig,
+    MergeConfig, MergeMode, TacticalConfig, UiConfig, WorktreeConfig,
 };
 pub use events::{
     BridgeEvent, BudgetSnapshot, DecisionKind, DecisionSource, EscalationTicket,

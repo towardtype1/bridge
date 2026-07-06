@@ -82,3 +82,7 @@ keep_on_failure = true
 # Command used by the "Open in VS Code" button to open a worktree.
 # e.g. "code", "cursor". Must be on PATH.
 editor_command = "code"
+# Deck scene palette: "federation" (warm) or "dark-ops" (night).
+deck_palette = "federation"
+# true places agents instantly and disables ambient animation.
+reduce_motion = false
