@@ -1656,6 +1656,153 @@ async fn planning_state_emitted_at_conference_open_and_mission_recorded() {
 }
 
 // ---------------------------------------------------------------------------
+// mid-mission plan amendments
+
+#[tokio::test(start_paused = true)]
+async fn mid_mission_amendment_proposed_approved_and_new_workstream_starts() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("first", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("go").await;
+
+    // Captain proposes adding a workstream mid-flight.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Recommend a second workstream.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "first", "title": "Title first", "description": "Description first", "depends_on": [] },
+                { "slug": "second", "title": "T2", "description": "D2", "depends_on": [] }
+            ]}
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "can we also do X?".into(),
+    })
+    .await;
+    let BridgeEvent::PlanProposed { revision, diff, .. } = rig
+        .wait_for("amendment proposed", |e| {
+            matches!(e, BridgeEvent::PlanProposed { .. })
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    let diff = diff.expect("amendments carry a diff");
+    assert_eq!(diff.added, vec!["second".to_string()]);
+
+    rig.send(BridgeCommand::ApproveProposal { revision }).await;
+    rig.wait_for("second provisioned", |e| {
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Working,
+                ..
+            }
+        )
+    })
+    .await;
+    // The amended plan was persisted.
+    rig.wait_until("plan upserted", || {
+        deps.recorded_missions
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .workstreams
+            .len()
+            == 2
+    })
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn invalid_amendment_feeds_reason_back_to_captain() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("first", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("go").await;
+
+    // Captain tries to edit the locked (working) workstream's brief; the
+    // follow-up (auto-fed rejection) turn then answers with plain text.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Rewriting the running brief.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "first", "title": "Title first", "description": "EDITED", "depends_on": [] }
+            ]}
+        })),
+    );
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Understood, standing down."
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "improve the brief".into(),
+    })
+    .await;
+    rig.wait_for(
+        "captain acknowledges rejection",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("standing down")),
+    )
+    .await;
+    // The rejection was fed back as a turn, not surfaced as ProposalRejected.
+    let feedback_turn = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .any(|t| t.inv.prompt.starts_with("AMENDMENT REJECTED: "));
+    assert!(feedback_turn);
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn amendment_cancelling_pending_workstream_emits_cancelled() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("base", &[]), ("later", &["base"])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("go").await;
+    // "later" depends on "base" (unmerged), so it is still Pending.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Cutting scope: drop the follow-up.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "base", "title": "Title base", "description": "Description base", "depends_on": [] }
+            ]}
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "cut scope".into(),
+    })
+    .await;
+    let BridgeEvent::PlanProposed { revision, .. } = rig
+        .wait_for("cut proposed", |e| {
+            matches!(e, BridgeEvent::PlanProposed { .. })
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    rig.send(BridgeCommand::ApproveProposal { revision }).await;
+    rig.wait_for("cancelled", |e| {
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Cancelled,
+                ..
+            }
+        )
+    })
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // small pure helpers
 
 #[test]
