@@ -87,7 +87,7 @@ pub fn hit_test(scene: &SceneState, x: f32, y: f32) -> Option<HitInfo> {
     }
     if VIEWSCREEN.contains(x, y) {
         return Some(HitInfo {
-            action: None,
+            action: Some(DeckAction::OpenMissionStatus),
             name: "VIEWSCREEN",
             hint: if scene.mission_live {
                 "Mission underway.".into()
@@ -103,7 +103,7 @@ pub fn hit_test(scene: &SceneState, x: f32, y: f32) -> Option<HitInfo> {
 mod tests {
     use super::*;
     use crate::deck::DeckAction;
-    use crate::deck::scene::{CHAIR, KOBA, SceneState, TACTICAL, console_box};
+    use crate::deck::scene::{CHAIR, KOBA, SceneState, TACTICAL, VIEWSCREEN, console_box};
     use crate::state::AppState;
     use bridge_core::{BridgeEvent, WorkstreamId, WorkstreamStatus};
 
@@ -164,6 +164,15 @@ mod tests {
             hit_test(&scene, kx, ky).unwrap().action,
             Some(DeckAction::OpenKobayashi)
         );
+    }
+
+    #[test]
+    fn viewscreen_opens_mission_status() {
+        let (scene, _) = scene_with_one();
+        let (vx, vy) = center_of(VIEWSCREEN);
+        let hit = hit_test(&scene, vx, vy).unwrap();
+        assert_eq!(hit.name, "VIEWSCREEN");
+        assert_eq!(hit.action, Some(DeckAction::OpenMissionStatus));
     }
 
     #[test]

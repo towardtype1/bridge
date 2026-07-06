@@ -17,7 +17,7 @@ pub struct AppState {
     pub mission_state: Option<MissionState>,
     pub mission_detail: Option<String>,
     pub workstreams: HashMap<WorkstreamId, WorkstreamPanel>,
-    /// Sidebar ordering: first-seen order.
+    /// Workstream ordering: first-seen order.
     pub workstream_order: Vec<WorkstreamId>,
     pub logs: Vec<LogEntry>,
     pub tactical_feed: Vec<HookDecisionRecord>,
@@ -37,15 +37,16 @@ pub struct AppState {
 pub struct UiInputs {
     /// Mission objective input box content.
     pub objective: String,
-    /// Workstream selected in the sidebar (center pane shows its detail).
+    /// Workstream selected on the deck (opens the workstream detail window).
     pub selected: Option<WorkstreamId>,
     /// Per-ticket deny-reason text fields in the escalation modals.
     pub deny_reasons: HashMap<EscalationId, String>,
     /// Editor launched by "Open in VS Code" (from `config.ui.editor_command`,
     /// set once at startup). Empty falls back to "code".
     pub editor_command: String,
-    /// Guardrails inspector: when true, also show routine Allow decisions;
-    /// otherwise only denials and escalations (exceptions-only).
+    /// Guardrails feed (Tactical window): when true, also show routine
+    /// Allow decisions; otherwise only denials and escalations
+    /// (exceptions-only).
     pub show_all_guardrails: bool,
     /// Deck's tactical console clicked: shows the Tactical interim window.
     pub open_tactical: bool,
@@ -54,6 +55,9 @@ pub struct UiInputs {
     /// Deck's computer console clicked: shows the Ship's Computer interim
     /// window (Ship's Log content).
     pub open_computer: bool,
+    /// Deck's viewscreen clicked: shows the Mission Status interim window
+    /// (mission title/state, merge queue, budget, Wind down / Stop).
+    pub open_mission_status: bool,
 }
 
 pub const MAX_FEED: usize = 2_000;
@@ -150,7 +154,7 @@ impl AppState {
     }
 
     /// Panel for a workstream, created (and appended to the first-seen
-    /// sidebar order) on first reference.
+    /// workstream order) on first reference.
     fn panel_mut(&mut self, id: WorkstreamId) -> &mut WorkstreamPanel {
         if !self.workstreams.contains_key(&id) {
             self.workstream_order.push(id);

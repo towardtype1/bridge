@@ -18,4 +18,5 @@ pub enum DeckAction {
     OpenTactical,
     OpenKobayashi,
     OpenComputer,
+    OpenMissionStatus,
 }

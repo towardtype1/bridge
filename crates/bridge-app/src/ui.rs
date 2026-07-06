@@ -1,17 +1,18 @@
 //! egui panels. Rendering only: read `AppState`, emit `BridgeCommand`s.
 //!
-//! Apple-minimal layout (see `docs/superpowers/specs/*bridge-gui-apple-minimal*`):
+//! Full-window deck (see the Migration addendum in
+//! `docs/superpowers/specs/2026-07-06-16bit-deck-design.md`): the deck's
+//! `CentralPanel` spans the entire remaining viewport now that the
+//! Apple-minimal left sidebar and right inspector are gone.
 //! - No app toolbar; the OS supplies the title bar.
-//! - Left sidebar: "Bridge" wordmark + an ellipsis-circle menu (Wind down /
-//!   Stop), the mission title led by a coloured state dot, then the
-//!   "Workstreams" source list (status dot + name + status subtitle).
-//! - Center: empty state is the Ship's Log; a selected workstream shows its
-//!   title + status pill + "Open in VS Code" (+ Override while Flagged), a
+//! - Center: the deck (`crate::deck::render::draw_deck`) plus five interim
+//!   `egui::Window`s opened by deck clicks: workstream detail (title +
+//!   status pill + "Open in VS Code" (+ Override while Flagged), a
 //!   station/branch subtitle, a battle-report card, turn history, and the
-//!   activity feed.
-//! - Right inspector: the merge queue and an exceptions-only Guardrails group
-//!   (denials + escalations) with a header count and a "Show all activity"
-//!   toggle.
+//!   activity feed), Tactical (the exceptions-only Guardrails feed),
+//!   Kobayashi Maru (battle-report summaries), Ship's Computer (the Ship's
+//!   Log), and Mission Status (mission title/state, the merge queue, budget
+//!   usage, and the Wind down / Stop commands - formerly sidebar chrome).
 //! - Bottom composer: a rounded field addressed to the Captain; Enter or the
 //!   circular send button starts a mission.
 //! - Conditional top banners: paused (rate-limit / budget) and compat warning.
@@ -29,8 +30,8 @@ use crate::state::{
 };
 use crate::theme::{self, ThemeMode, Tokens};
 use bridge_core::{
-    BridgeCommand, BudgetExtension, DecisionKind, LogLevel, MergeQueueState, MissionState,
-    PauseReason, UserDecision, Verdict, WorkstreamId, WorkstreamStatus,
+    BridgeCommand, BudgetExtension, BudgetSnapshot, DecisionKind, LogLevel, MergeQueueState,
+    MissionState, PauseReason, UserDecision, Verdict, WorkstreamId, WorkstreamStatus,
 };
 use chrono::Utc;
 use egui::{Align, Align2, Color32, Layout, RichText};
@@ -73,8 +74,6 @@ fn draw_in(
     paused_banner(ui, t, state, out);
     compat_banner(ui, t, state);
     bottom_composer(ui, t, state, out);
-    left_sidebar(ui, t, state, out);
-    right_inspector(ui, t, state);
     center(ui, t, state, deck, ui_cfg, out);
     escalation_modal(&ctx, t, state, out);
     merge_modal(&ctx, t, state, out);
@@ -100,6 +99,7 @@ pub fn apply_deck_action(state: &mut AppState, action: crate::deck::DeckAction) 
         A::OpenTactical => state.ui.open_tactical = true,
         A::OpenKobayashi => state.ui.open_kobayashi = true,
         A::OpenComputer => state.ui.open_computer = true,
+        A::OpenMissionStatus => state.ui.open_mission_status = true,
     }
 }
 
@@ -129,8 +129,8 @@ fn card<R>(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui) -> R) 
         .inner
 }
 
-/// Uppercase tertiary section header used across the sidebar, inspector,
-/// and content areas.
+/// Uppercase tertiary section header used across the interim windows and
+/// content areas.
 fn section_label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.label(
         RichText::new(text.to_uppercase())
@@ -174,18 +174,6 @@ fn status_color(status: &WorkstreamStatus, t: &Tokens) -> Color32 {
     }
 }
 
-/// Whether a status represents work in flight (drives the pulse).
-fn status_is_active(status: &WorkstreamStatus) -> bool {
-    matches!(
-        status,
-        WorkstreamStatus::Working
-            | WorkstreamStatus::Rebasing
-            | WorkstreamStatus::ConflictFix
-            | WorkstreamStatus::UnderTest { .. }
-            | WorkstreamStatus::InMergeQueue
-    )
-}
-
 fn mission_state_color(state: &AppState, t: &Tokens) -> Color32 {
     match &state.mission_state {
         Some(MissionState::Executing) => t.accent,
@@ -224,7 +212,8 @@ fn merge_state_label(state: MergeQueueState) -> &'static str {
     }
 }
 
-/// First uuid group, enough to tell workstreams apart in the sidebar.
+/// First uuid group, enough to tell workstreams apart in the interim
+/// windows.
 fn short_id(id: &WorkstreamId) -> String {
     id.to_string().chars().take(8).collect()
 }
@@ -386,74 +375,7 @@ fn bottom_composer(
     });
 }
 
-// -- sidebar ------------------------------------------------------------------
-
-fn left_sidebar(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState, out: &mut Vec<BridgeCommand>) {
-    let frame = egui::Frame::new()
-        .fill(t.sidebar)
-        .inner_margin(egui::Margin::symmetric(14, 14));
-    egui::Panel::left("sidebar")
-        .exact_size(238.0)
-        .resizable(false)
-        .frame(frame)
-        .show(ui, |ui| {
-            // Mission header: wordmark + ellipsis-circle menu.
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Bridge").color(t.text).size(13.0).strong());
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    mission_menu(ui, t, out);
-                });
-            });
-            ui.add_space(12.0);
-
-            // Mission title led by a state dot (tooltip carries the state).
-            ui.horizontal(|ui| {
-                let resp = dot(ui, mission_state_color(state, t), mission_is_live(state));
-                if let Some(ms) = &state.mission_state {
-                    resp.on_hover_text(mission_state_label(ms));
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(mission_title(state))
-                        .color(t.text)
-                        .size(15.0)
-                        .strong(),
-                );
-            });
-            ui.add_space(18.0);
-
-            section_label(ui, t, "Workstreams");
-            ui.add_space(6.0);
-
-            let order = state.workstream_order.clone();
-            let mut clicked: Option<WorkstreamId> = None;
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for id in order {
-                        if workstream_row(ui, t, state, id) {
-                            clicked = Some(id);
-                        }
-                    }
-                });
-            if let Some(id) = clicked {
-                state.ui.selected = Some(id);
-            }
-        });
-}
-
-/// The ellipsis-circle menu: Wind down / Stop, kept out of persistent chrome.
-fn mission_menu(ui: &mut egui::Ui, t: &Tokens, out: &mut Vec<BridgeCommand>) {
-    let button = egui::Button::new(RichText::new("⋯").color(t.text_2).size(16.0)).frame(false);
-    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-        if ui.button("Wind down").clicked() {
-            out.push(BridgeCommand::WindDown);
-        }
-        if ui.button("Stop").clicked() {
-            out.push(BridgeCommand::Shutdown);
-        }
-    });
-}
+// -- mission status -----------------------------------------------------------
 
 /// Title text for the mission header: the objective while planning, else the
 /// state name; the dot's tooltip always carries the precise state.
@@ -465,73 +387,6 @@ fn mission_title(state: &AppState) -> String {
         Some(ms) => mission_state_label(ms),
         None => "No active mission".to_owned(),
     }
-}
-
-/// One source-list row. Returns true when clicked. The selected row gets a
-/// soft accent-tinted fill with normal label text.
-fn workstream_row(ui: &mut egui::Ui, t: &Tokens, state: &AppState, id: WorkstreamId) -> bool {
-    let status = state.workstreams.get(&id).and_then(|p| p.status.clone());
-    let selected = state.ui.selected == Some(id);
-    let name = short_id(&id);
-    let subtitle = status
-        .as_ref()
-        .map(status_label)
-        .unwrap_or_else(|| "…".to_owned());
-    let color = status
-        .as_ref()
-        .map(|s| status_color(s, t))
-        .unwrap_or(t.text_3);
-    let pulse = status.as_ref().is_some_and(status_is_active);
-
-    let fill = if selected {
-        theme::tint(t.accent, t.sidebar, 0.14)
-    } else {
-        Color32::TRANSPARENT
-    };
-    let inner = egui::Frame::new()
-        .fill(fill)
-        .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                dot(ui, color, pulse);
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(RichText::new(name).color(t.text).size(13.5));
-                    ui.label(RichText::new(subtitle).color(t.text_2).size(11.0));
-                });
-            });
-        });
-
-    let resp = inner.response.interact(egui::Sense::click());
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    ui.add_space(2.0);
-    resp.clicked()
-}
-
-// -- inspector ----------------------------------------------------------------
-
-fn right_inspector(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
-    let frame = egui::Frame::new()
-        .fill(t.surface_2)
-        .inner_margin(egui::Margin::symmetric(16, 16));
-    egui::Panel::right("inspector")
-        .exact_size(292.0)
-        .resizable(false)
-        .frame(frame)
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    merge_queue_group(ui, t, state);
-                    ui.add_space(20.0);
-                    guardrails_group(ui, t, state);
-                });
-        });
 }
 
 fn merge_queue_group(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
@@ -579,6 +434,8 @@ fn number_chip(ui: &mut egui::Ui, t: &Tokens, position: u32) {
             );
         });
 }
+
+// -- guardrails (the Tactical window) -----------------------------------------
 
 fn guardrails_group(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
     let total = state.tactical_feed.len();
@@ -652,10 +509,11 @@ fn guardrail_row(ui: &mut egui::Ui, t: &Tokens, record: &bridge_core::HookDecisi
 
 // -- content ------------------------------------------------------------------
 
-/// The deck fills the center panel; the selected workstream, tactical,
-/// Kobayashi, and computer consoles each open a stock `egui::Window` on
-/// top of it. These four windows are interim: faithful to the previous
-/// flat layout, not yet restyled for the deck (a later task covers that).
+/// The deck fills the entire center panel; the selected workstream,
+/// tactical, Kobayashi, computer, and viewscreen (mission status) consoles
+/// each open a stock `egui::Window` on top of it. These five windows are
+/// interim: faithful to the previous flat layout, not yet restyled for the
+/// deck (a later task covers that).
 fn center(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -681,6 +539,7 @@ fn center(
     tactical_window(&ctx, t, state);
     kobayashi_window(&ctx, t, state);
     computer_window(&ctx, t, state);
+    mission_status_window(&ctx, t, state, out);
 }
 
 /// Selecting a console on the deck opens this window; closing it (the
@@ -822,8 +681,8 @@ fn workstream_body(
         });
 }
 
-/// The tactical console: reuses the inspector's Guardrails group content so
-/// the exceptions-only feed reads identically in both places.
+/// The tactical console: the exceptions-only Guardrails feed (denials and
+/// escalations, with a "Show all activity" toggle).
 fn tactical_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
     let mut open = state.ui.open_tactical;
     if !open {
@@ -899,6 +758,94 @@ fn computer_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
             ships_log(ui, t, state);
         });
     state.ui.open_computer = open;
+}
+
+/// The viewscreen: mission title/state, the merge queue, budget usage, and
+/// the Wind down / Stop commands - homed here now that the sidebar (which
+/// used to carry them via `mission_menu`) is gone.
+fn mission_status_window(
+    ctx: &egui::Context,
+    t: &Tokens,
+    state: &mut AppState,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let mut open = state.ui.open_mission_status;
+    if !open {
+        return;
+    }
+    egui::Window::new("Mission Status")
+        .open(&mut open)
+        .default_size(egui::vec2(340.0, 420.0))
+        .show(ctx, |ui| {
+            mission_status_body(ui, t, state, out);
+        });
+    state.ui.open_mission_status = open;
+}
+
+fn mission_status_body(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    state: &AppState,
+    out: &mut Vec<BridgeCommand>,
+) {
+    ui.horizontal(|ui| {
+        let resp = dot(ui, mission_state_color(state, t), mission_is_live(state));
+        if let Some(ms) = &state.mission_state {
+            resp.on_hover_text(mission_state_label(ms));
+        }
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new(mission_title(state))
+                .color(t.text)
+                .size(15.0)
+                .strong(),
+        );
+    });
+    ui.add_space(12.0);
+
+    ui.horizontal(|ui| {
+        if ui.button("Wind down").clicked() {
+            out.push(BridgeCommand::WindDown);
+        }
+        if ui.button("Stop").clicked() {
+            out.push(BridgeCommand::Shutdown);
+        }
+    });
+    ui.add_space(16.0);
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            merge_queue_group(ui, t, state);
+            if let Some(budget) = &state.budget {
+                ui.add_space(20.0);
+                budget_group(ui, t, budget);
+            }
+        });
+}
+
+/// Simple turns-used/max and cost-so-far rows; shown only once a
+/// `BudgetSnapshot` has arrived.
+fn budget_group(ui: &mut egui::Ui, t: &Tokens, budget: &BudgetSnapshot) {
+    section_label(ui, t, "Budget");
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new(format!(
+            "{} / {} turns",
+            budget.total_turns, budget.max_total_turns
+        ))
+        .color(t.text_2)
+        .size(12.5)
+        .monospace(),
+    );
+    if budget.total_cost_usd > 0.0 {
+        ui.label(
+            RichText::new(format!("${:.2}", budget.total_cost_usd))
+                .color(t.text_2)
+                .size(12.5)
+                .monospace(),
+        );
+    }
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
@@ -1226,6 +1173,8 @@ mod tests {
         assert!(state.ui.open_kobayashi);
         apply_deck_action(&mut state, crate::deck::DeckAction::OpenComputer);
         assert!(state.ui.open_computer);
+        apply_deck_action(&mut state, crate::deck::DeckAction::OpenMissionStatus);
+        assert!(state.ui.open_mission_status);
         // HailCaptain clears workstream selection (captain has no panel yet; A adds it).
         apply_deck_action(&mut state, crate::deck::DeckAction::HailCaptain);
         assert_eq!(state.ui.selected, None);
