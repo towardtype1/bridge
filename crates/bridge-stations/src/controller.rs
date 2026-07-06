@@ -452,7 +452,7 @@ where
         let order_id = OrderId::new();
         let inv = ClaudeInvocation {
             prompt: prompts::captain_plan(&objective, &repo_summary),
-            cwd: PathBuf::from("."),
+            cwd: self.shared.deps.repo_root(),
             resume: None,
             max_turns: profile.max_turns_default,
             allowed_tools: profile.allowed_tools.clone(),
@@ -898,10 +898,18 @@ where
     }
 
     async fn dispatch_kobayashi(&mut self, ws: WorkstreamId, round: u32) {
-        let (spec, slug, merge_gate) = {
+        let (spec, slug, merge_gate, impl_handle) = {
             let Some(m) = self.mission.as_ref() else { return };
             let Some(w) = m.ws.get(&ws) else { return };
-            (w.spec.clone(), m.plan.slug.clone(), w.merge_gate)
+            let Some(handle) = w.provisioned.as_ref().map(|p| p.handle.clone()) else {
+                // Cannot test what was never provisioned; fail safe.
+                self.set_status(
+                    ws,
+                    WorkstreamStatus::Failed { reason: "no provisioned worktree to test".into() },
+                );
+                return;
+            };
+            (w.spec.clone(), m.plan.slug.clone(), w.merge_gate, handle)
         };
         if merge_gate {
             // Post-conflict testing counts as the checks phase of the queue.
@@ -923,7 +931,8 @@ where
         let tx = self.shared.internal_tx.clone();
         self.shared.spawn(async move {
             let result =
-                KobayashiRunner::run_round(&*deps, &cfg, &helper, &spec, &slug, round).await;
+                KobayashiRunner::run_round(&*deps, &cfg, &helper, &spec, &slug, &impl_handle, round)
+                    .await;
             let _ = tx.send(Internal::KobayashiDone { ws, round, result }).await;
         });
     }
@@ -946,7 +955,7 @@ where
         let order_id = OrderId::new();
         let inv = ClaudeInvocation {
             prompt: prompts::comms_mission_report(&plan, &summary),
-            cwd: PathBuf::from("."),
+            cwd: self.shared.deps.repo_root(),
             resume: None,
             max_turns: profile.max_turns_default,
             allowed_tools: profile.allowed_tools.clone(),

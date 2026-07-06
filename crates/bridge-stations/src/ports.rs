@@ -27,6 +27,11 @@ pub trait TurnPort: Send + Sync + 'static {
 }
 
 pub trait GitPort: Send + Sync + 'static {
+    /// Root of the target repository's primary checkout; the cwd for
+    /// Captain and Comms turns. Default keeps existing mocks compiling.
+    fn repo_root(&self) -> PathBuf {
+        PathBuf::from(".")
+    }
     fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError>;
     fn create_throwaway(&self, branch: &str) -> Result<WorktreeHandle, GitError>;
     fn remove_worktree(&self, h: &WorktreeHandle, force: bool) -> Result<(), GitError>;
@@ -83,6 +88,9 @@ impl TurnPort for LiveDeps {
 }
 
 impl GitPort for LiveDeps {
+    fn repo_root(&self) -> PathBuf {
+        self.worktrees.repo_root().to_path_buf()
+    }
     fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError> {
         self.worktrees.create(mission, ws, base)
     }
