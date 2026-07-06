@@ -103,7 +103,8 @@ fn card<R>(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui) -> R) 
         .inner
 }
 
-/// Uppercase tertiary section header (source-list headers only).
+/// Uppercase tertiary section header used across the sidebar, inspector,
+/// and content areas.
 fn section_label(ui: &mut egui::Ui, t: &Tokens, text: &str) {
     ui.label(
         RichText::new(text.to_uppercase())
@@ -866,8 +867,17 @@ fn spawn_editor(editor_command: &str, path: &std::path::Path) {
     } else {
         editor_command
     };
-    if let Err(err) = std::process::Command::new(cmd).arg(path).spawn() {
-        tracing::warn!(editor = %cmd, path = %path.display(), error = %err, "failed to open editor");
+    match std::process::Command::new(cmd).arg(path).spawn() {
+        Ok(mut child) => {
+            // Reap the child on a detached thread so it never lingers as a
+            // zombie process; we don't care about its exit status.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(err) => {
+            tracing::warn!(editor = %cmd, path = %path.display(), error = %err, "failed to open editor");
+        }
     }
 }
 
