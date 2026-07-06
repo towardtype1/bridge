@@ -21,9 +21,7 @@ pub mod settings;
 pub mod stream;
 pub mod version;
 
-pub use hooks::{
-    HookPayload, hook_response_allow, hook_response_deny, hook_response_passthrough,
-};
+pub use hooks::{HookPayload, hook_response_allow, hook_response_deny, hook_response_passthrough};
 pub use invocation::{ClaudeInvocation, OutputFormat, scrubbed_env};
 pub use settings::render_worktree_settings;
 pub use stream::{

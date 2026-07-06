@@ -21,3 +21,5 @@ chrono.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# test-util enables tokio::time::pause / start_paused for deterministic timer tests
+tokio = { version = "1.52", features = ["full", "test-util"] }

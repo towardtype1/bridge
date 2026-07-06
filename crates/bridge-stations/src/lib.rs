@@ -14,6 +14,9 @@ pub mod ports;
 pub mod profiles;
 pub mod prompts;
 
+#[cfg(test)]
+mod testutil;
+
 pub use controller::{MissionController, MissionError};
 pub use kobayashi::KobayashiRunner;
 pub use merge_queue::MergeQueue;
