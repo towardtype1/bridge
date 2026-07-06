@@ -335,7 +335,7 @@ fn bottom_composer(
                         .id(input_id)
                         .frame(egui::Frame::new())
                         .desired_width(text_w)
-                        .hint_text("Give the Captain your next objective..."),
+                        .hint_text("Hail the Captain..."),
                 );
                 if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
@@ -353,8 +353,8 @@ fn bottom_composer(
         });
 
         if submit && !state.ui.objective.trim().is_empty() {
-            out.push(BridgeCommand::StartMission {
-                objective: state.ui.objective.trim().to_owned(),
+            out.push(BridgeCommand::SayToCaptain {
+                text: state.ui.objective.trim().to_owned(),
             });
             state.ui.objective.clear();
         }

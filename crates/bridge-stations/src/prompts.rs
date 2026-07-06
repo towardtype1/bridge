@@ -5,38 +5,6 @@ use bridge_core::{Finding, MissionPlan, WorkstreamSpec};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-/// Captain planning prompt: decompose `objective` into parallelizable
-/// workstreams with dependencies, kebab-case slugs, self-contained
-/// descriptions (the Helm agent sees ONLY its description). Instructs the
-/// model that output must satisfy the PlanDraft JSON schema.
-pub fn captain_plan(objective: &str, repo_summary: &str) -> String {
-    format!(
-        "Plan a software mission.\n\
-         \n\
-         ## Objective\n\
-         {objective}\n\
-         \n\
-         ## Repository\n\
-         {repo_summary}\n\
-         \n\
-         ## Instructions\n\
-         Decompose the objective into the smallest useful set of workstreams that can \
-         run in parallel. Rules:\n\
-         - Each workstream gets a short kebab-case slug (lowercase alphanumerics and \
-           hyphens; it becomes part of a git branch name), a title, and a description.\n\
-         - Descriptions must be fully self-contained working briefs: the executing agent \
-           sees ONLY its own description, never the objective, the other workstreams, or \
-           this conversation. Include every file path, constraint and acceptance \
-           criterion it needs.\n\
-         - Prefer independent workstreams. Only add a depends_on entry (by slug) when one \
-           workstream genuinely cannot start before another has merged.\n\
-         - The dependency graph must be acyclic.\n\
-         \n\
-         Your final output must be JSON satisfying the provided PlanDraft schema: an \
-         object with a \"workstreams\" array of {{slug, title, description, depends_on}}."
-    )
-}
-
 /// Helm execution prompt for one workstream brief.
 pub fn helm_order(ws: &WorkstreamSpec, objective: &str) -> String {
     format!(
@@ -409,18 +377,6 @@ mod tests {
             failing_test_path: Some(format!("tests/adversarial/{class}.rs")),
             weakness_class: class.into(),
         }
-    }
-
-    #[test]
-    fn captain_plan_carries_inputs_and_contract() {
-        let p = captain_plan("Ship the frobnicator", "Rust workspace, main branch: main");
-        assert!(p.contains("Ship the frobnicator"));
-        assert!(p.contains("Rust workspace, main branch: main"));
-        assert!(p.contains("kebab-case"));
-        assert!(p.contains("depends_on"));
-        assert!(p.contains("self-contained"));
-        assert!(p.contains("PlanDraft"));
-        assert!(p.contains("acyclic"));
     }
 
     #[test]

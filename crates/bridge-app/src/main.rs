@@ -19,9 +19,10 @@
 //!
 //! `--headless-smoke` skips eframe and drives one scripted mini-mission
 //! for CI/e2e verification (see tests + Phase C of the plan): it sends
-//! StartMission with the positional objective, prints every event as a
-//! JSON line on stdout, auto-approves escalations and merge proposals,
-//! and exits when the mission reaches Complete (0) or Failed (1).
+//! SayToCaptain with the positional objective, auto-approves the first plan
+//! proposal, prints every event as a JSON line on stdout, auto-approves
+//! escalations and merge proposals, and exits when the mission reaches
+//! Complete (0) or Failed (1).
 
 mod state;
 mod theme;
@@ -250,8 +251,9 @@ fn run_headless(
 
     wiring
         .commands
-        .blocking_send(BridgeCommand::StartMission { objective })?;
+        .blocking_send(BridgeCommand::SayToCaptain { text: objective })?;
 
+    let mut plan_approved = false;
     let mut outcome: Result<(), Box<dyn std::error::Error>> = Ok(());
     loop {
         let event = match events_rx.blocking_recv() {
@@ -274,6 +276,14 @@ fn run_headless(
         println!("{}", serde_json::to_string(&event)?);
 
         match &event {
+            BridgeEvent::PlanProposed { revision, .. } if !plan_approved => {
+                plan_approved = true;
+                wiring
+                    .commands
+                    .blocking_send(BridgeCommand::ApproveProposal {
+                        revision: *revision,
+                    })?;
+            }
             BridgeEvent::EscalationRequested(ticket) => {
                 wiring
                     .commands

@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BridgeCommand {
-    /// Start a mission from a user objective. The Captain plans it.
-    StartMission { objective: String },
     /// Answer an escalation ticket.
     ResolveEscalation {
         id: EscalationId,

@@ -2,8 +2,10 @@
 //! objective to final report.
 //!
 //! ```text
-//! StartMission
-//!   -> Planning: Captain turn (PlanDraft schema) -> MissionPlan
+//! SayToCaptain
+//!   -> Planning: a Captain conference (CaptainReply schema) converses
+//!      turn by turn, proposing full plan drafts; ApproveProposal on the
+//!      latest revision validates it into a MissionPlan
 //!      (screen_order rejects/escalates before ANY claude spawn)
 //!   -> Executing: workstreams whose dependencies are merged get spawned
 //!      as tokio tasks (Ops: semaphore slots come from the engine; budget
@@ -30,10 +32,11 @@ use crate::profiles::station_profile;
 use crate::prompts;
 use bridge_compat::{ClaudeInvocation, OutputFormat};
 use bridge_core::{
-    BridgeCommand, BridgeConfig, BridgeEvent, BudgetExtension, BudgetSnapshot, EscalationId,
-    EscalationTicket, MergeProposal, MergeQueueState, MissionId, MissionPlan, MissionState,
-    MissionStatusUpdate, Order, OrderId, PauseReason, PlanDraft, RateLimitState, SessionId,
-    Station, UserDecision, WorkstreamId, WorkstreamSpec, WorkstreamStatus, WorkstreamTurns,
+    BridgeCommand, BridgeConfig, BridgeEvent, BudgetExtension, BudgetSnapshot, CaptainReply,
+    EscalationId, EscalationTicket, MergeProposal, MergeQueueState, MissionId, MissionPlan,
+    MissionState, MissionStatusUpdate, Order, OrderId, PauseReason, PlanDraft, RateLimitState,
+    SessionId, Station, UserDecision, WorkstreamId, WorkstreamSpec, WorkstreamStatus,
+    WorkstreamTurns,
 };
 use bridge_engine::runner::ExitClass;
 use bridge_engine::{EngineError, RateLimitHit, TurnCtx, TurnOutcome};
@@ -94,7 +97,7 @@ where
         }
     }
 
-    /// Resume a persisted mission instead of waiting for StartMission.
+    /// Resume a persisted mission instead of waiting for a Captain conference.
     pub fn with_resumed_plan(mut self, plan: MissionPlan) -> Self {
         self.resumed_plan = Some(plan);
         self
@@ -118,7 +121,7 @@ where
             shared,
             commands: self.commands,
             internal_rx,
-            planning: None,
+            conference: None,
             mission: None,
             winding_down: false,
             exit: None,
@@ -250,12 +253,20 @@ struct RebaseData {
     target: String,
 }
 
-struct Planning {
+struct Conference {
     mission_id: MissionId,
-    objective: String,
     slug: String,
-    order_id: OrderId,
-    started_at: DateTime<Utc>,
+    objective: String,
+    session: Option<SessionId>,
+    revision: u64,
+    latest_proposal: Option<(u64, PlanDraft)>,
+    /// Some((order_id, started_at)) while a Captain turn is running.
+    turn_in_flight: Option<(OrderId, DateTime<Utc>)>,
+    queued: VecDeque<String>,
+    turns_used: u32,
+    auto_retries: u32,
+    /// Approval locked while a turn was in flight; its proposal is discarded.
+    approved: bool,
 }
 
 struct WsState {
@@ -309,7 +320,7 @@ where
     shared: Arc<Shared<D>>,
     commands: mpsc::Receiver<BridgeCommand>,
     internal_rx: mpsc::Receiver<Internal>,
-    planning: Option<Planning>,
+    conference: Option<Conference>,
     mission: Option<Mission>,
     winding_down: bool,
     exit: Option<Result<(), MissionError>>,
@@ -359,7 +370,7 @@ where
                     Some(c) => self.handle_command(c).await,
                     None => {
                         // GUI hung up: graceful shutdown.
-                        break if self.mission.is_some() || self.planning.is_some() {
+                        break if self.mission.is_some() || self.conference.is_some() {
                             Err(MissionError::ChannelClosed)
                         } else {
                             Ok(())
@@ -405,7 +416,8 @@ where
 
     async fn handle_command(&mut self, cmd: BridgeCommand) {
         match cmd {
-            BridgeCommand::StartMission { objective } => self.start_mission(objective).await,
+            BridgeCommand::SayToCaptain { text } => self.say_to_captain(text).await,
+            BridgeCommand::ApproveProposal { revision } => self.approve_proposal(revision).await,
             BridgeCommand::ResolveEscalation { id, decision } => {
                 self.resolve_escalation(id, decision).await
             }
@@ -433,9 +445,6 @@ where
                 self.exit = Some(Ok(()));
             }
             BridgeCommand::ResyncActionable => self.resync_actionable(),
-            BridgeCommand::SayToCaptain { .. } | BridgeCommand::ApproveProposal { .. } => {
-                tracing::warn!("conversational captain not wired yet (Task 4)");
-            }
         }
     }
 
@@ -492,40 +501,111 @@ where
         }
     }
 
-    // -- planning ---------------------------------------------------------
+    // -- captain conference -------------------------------------------------
 
-    async fn start_mission(&mut self, objective: String) {
-        if self.planning.is_some() || self.mission.is_some() {
-            tracing::warn!("StartMission ignored: a mission is already active");
+    /// Pre-launch phase (no active mission): open or continue the
+    /// conference. Mid-mission conference (Task 7) rejects for now.
+    async fn say_to_captain(&mut self, text: String) {
+        if self.mission.is_some() {
+            tracing::warn!("mid-mission conference lands in a later task");
             return;
         }
-        let mission_id = MissionId::new();
-        let slug = slugify(&objective);
-        let captain_ws = WorkstreamId(mission_id.0);
-        self.shared
-            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-                mission: mission_id,
-                state: MissionState::Planning,
-                detail: Some(objective.clone()),
-            }));
+        if self.conference.is_none() {
+            let mission_id = MissionId::new();
+            let slug = slugify(&text);
+            self.shared
+                .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                    mission: mission_id,
+                    state: MissionState::Planning,
+                    detail: Some(text.clone()),
+                }));
+            // Placeholder row so conference turns have a mission to attach
+            // to; begin_mission's record_mission upserts the real plan later.
+            let placeholder = MissionPlan {
+                mission_id,
+                slug: slug.clone(),
+                objective: text.clone(),
+                workstreams: Vec::new(),
+                edges: Vec::new(),
+            };
+            if let Err(e) = self
+                .shared
+                .deps
+                .record_mission(&placeholder, &self.shared.config)
+            {
+                tracing::warn!("failed to persist conference mission: {e}");
+            }
+            self.conference = Some(Conference {
+                mission_id,
+                slug,
+                objective: text.clone(),
+                session: None,
+                revision: 0,
+                latest_proposal: None,
+                turn_in_flight: None,
+                queued: VecDeque::new(),
+                turns_used: 0,
+                auto_retries: 0,
+                approved: false,
+            });
+            let mission = mission_id;
+            self.shared.emit(BridgeEvent::UserSaid {
+                mission,
+                text: text.clone(),
+            });
+            let main = self
+                .shared
+                .blocking(|d| d.main_branch())
+                .await
+                .unwrap_or_else(|_| "main".into());
+            let opening = prompts::captain_confer_opening(
+                &text,
+                &format!("Target repository main branch: {main}."),
+            );
+            self.start_captain_turn(opening);
+            return;
+        }
+        let conf = self.conference.as_mut().expect("checked above");
+        self.shared.emit(BridgeEvent::UserSaid {
+            mission: conf.mission_id,
+            text: text.clone(),
+        });
+        if conf.turn_in_flight.is_some() || conf.approved {
+            conf.queued.push_back(text);
+        } else {
+            self.start_captain_turn(text);
+        }
+    }
 
-        let main = self
-            .shared
-            .blocking(|d| d.main_branch())
-            .await
-            .unwrap_or_else(|_| "main".into());
-        let repo_summary = format!("Target repository main branch: {main}.");
+    /// Mirrors the old `start_mission` invocation body: same profile, tools
+    /// and streaming, but the CaptainReply schema, a resumed session, and a
+    /// per-mission conference turn cap.
+    fn start_captain_turn(&mut self, message: String) {
+        let Some(conf) = self.conference.as_mut() else {
+            return;
+        };
+        if conf.turns_used >= self.shared.config.captain.max_conference_turns {
+            let revision = conf.revision;
+            let mission = conf.mission_id;
+            self.shared.emit(BridgeEvent::ProposalRejected {
+                mission,
+                revision,
+                reason: "conference turn budget exhausted; approve the latest proposal, extend captain.max_conference_turns, or shut down".into(),
+            });
+            return;
+        }
+        conf.turns_used += 1;
         let profile = station_profile(Station::Captain, &self.shared.config);
         let order_id = OrderId::new();
         let inv = ClaudeInvocation {
-            prompt: prompts::captain_plan(&objective, &repo_summary),
+            prompt: message,
             cwd: self.shared.deps.repo_root(),
-            resume: None,
+            resume: conf.session.clone(),
             max_turns: profile.max_turns_default,
             allowed_tools: profile.allowed_tools.clone(),
             disallowed_tools: profile.disallowed_tools.clone(),
             model: Some(profile.model.clone()),
-            json_schema: Some(PlanDraft::json_schema()),
+            json_schema: Some(CaptainReply::json_schema()),
             mcp_config: self
                 .shared
                 .config
@@ -533,24 +613,16 @@ where
                 .as_ref()
                 .map(|l| l.mcp_config_path.clone()),
             append_system_prompt: Some(profile.append_system_prompt.clone()),
-            // Stream so the GUI can watch the plan take shape live; the
-            // structured plan still arrives on the terminal result event.
             output_format: OutputFormat::StreamJson,
             setting_sources: Vec::new(),
         };
         let ctx = TurnCtx {
-            workstream: captain_ws,
+            workstream: WorkstreamId(conf.mission_id.0),
             station: Station::Captain,
             kobayashi: false,
             pid_register: None,
         };
-        self.planning = Some(Planning {
-            mission_id,
-            objective,
-            slug,
-            order_id,
-            started_at: Utc::now(),
-        });
+        conf.turn_in_flight = Some((order_id, Utc::now()));
         let deps = self.shared.deps.clone();
         let tx = self.shared.internal_tx.clone();
         self.shared.spawn(async move {
@@ -560,65 +632,203 @@ where
     }
 
     async fn captain_done(&mut self, result: Result<TurnOutcome, EngineError>) {
-        let Some(p) = self.planning.take() else {
+        let Some(conf) = self.conference.as_mut() else {
             return;
         };
+        let Some((order_id, started_at)) = conf.turn_in_flight.take() else {
+            return;
+        };
+        let mission = conf.mission_id;
+
         let outcome = match result {
-            Ok(o) => o,
+            Ok(o)
+                if o.exit == ExitClass::Success
+                    && !o.result.as_ref().is_some_and(|r| r.is_error) =>
+            {
+                o
+            }
+            Ok(_) => {
+                self.shared.emit(BridgeEvent::CaptainSays {
+                    mission,
+                    text: "The Captain did not respond cleanly; say something to retry.".into(),
+                });
+                return;
+            }
             Err(e) => {
-                self.fail_planning(&p, format!("captain turn failed: {e}"));
+                self.shared.emit(BridgeEvent::CaptainSays {
+                    mission,
+                    text: format!("The Captain did not respond: {e}. Say something to retry."),
+                });
                 return;
             }
         };
-        if outcome.exit != ExitClass::Success || outcome.result.as_ref().is_some_and(|r| r.is_error)
-        {
-            self.fail_planning(&p, "captain turn did not succeed".into());
-            return;
+
+        // Session continuity: capture and persist. NOTE the borrow dance:
+        // `conf` (a &mut into self.conference) must be dropped before any
+        // `&mut self` method call, and re-fetched afterwards.
+        if let Some(sid) = outcome.result.as_ref().and_then(|r| r.session_id.clone()) {
+            let sid = SessionId(sid);
+            conf.session = Some(sid.clone());
+            let ws = WorkstreamId(mission.0);
+            let root = self.shared.deps.repo_root();
+            if let Err(e) = self
+                .shared
+                .deps
+                .record_session(ws, Station::Captain, &sid, &root)
+            {
+                tracing::warn!("failed to persist captain session: {e}");
+            }
         }
-        let Some(structured) = outcome.structured_output.clone().or_else(|| {
+        self.record_conference_turn(order_id, started_at, &outcome); // &mut self: conf dropped here
+
+        let structured = outcome.structured_output.clone().or_else(|| {
             outcome
                 .result
                 .as_ref()
                 .and_then(|r| r.structured_output.clone())
-        }) else {
-            self.fail_planning(&p, "captain produced no structured plan".into());
+        });
+        let parsed: Option<CaptainReply> = structured.and_then(|v| serde_json::from_value(v).ok());
+        let Some(conf) = self.conference.as_mut() else {
             return;
-        };
-        let draft: PlanDraft = match serde_json::from_value(structured) {
-            Ok(d) => d,
-            Err(e) => {
-                self.fail_planning(&p, format!("plan draft did not parse: {e}"));
+        }; // re-fetch
+        let reply: CaptainReply = match parsed {
+            Some(reply) => reply,
+            None if conf.auto_retries < 1 => {
+                conf.auto_retries += 1;
+                self.start_captain_turn(prompts::SCHEMA_RETRY_MSG.into());
+                return;
+            }
+            None => {
+                conf.auto_retries = 0;
+                self.shared.emit(BridgeEvent::CaptainSays {
+                    mission,
+                    text: "The Captain's reply was unreadable twice; say something to retry."
+                        .into(),
+                });
                 return;
             }
         };
+        self.shared.emit(BridgeEvent::CaptainSays {
+            mission,
+            text: reply.message.clone(),
+        });
+
+        if let Some(draft) = reply.proposed_plan {
+            if self.conference.as_ref().is_some_and(|c| c.approved) {
+                tracing::info!("proposal discarded: approval already locked");
+                // One-shot: the lock existed only to discard THIS in-flight
+                // turn's proposal. Clear it now so the conference (queue
+                // flush below, future mid-mission turns) is usable again.
+                if let Some(conf) = self.conference.as_mut() {
+                    conf.approved = false;
+                }
+            } else {
+                self.handle_proposal(draft).await; // pre-launch validation below
+            }
+        }
+
+        // Flush queued user messages as one concatenated turn.
+        if let Some(conf) = self.conference.as_mut()
+            && !conf.queued.is_empty()
+            && !conf.approved
+            && conf.turn_in_flight.is_none()
+        {
+            let msg = conf.queued.drain(..).collect::<Vec<_>>().join("\n\n");
+            self.start_captain_turn(msg);
+        }
+    }
+
+    /// Pre-launch arm; Task 7 adds the mid-mission amendment arm.
+    async fn handle_proposal(&mut self, draft: PlanDraft) {
+        let Some(conf) = self.conference.as_mut() else {
+            return;
+        };
+        let mission = conf.mission_id;
+        // Pre-launch: validate structurally by building the real plan.
         let base_ref = self
             .shared
             .blocking(|d| d.main_branch())
             .await
             .unwrap_or_else(|_| "main".into());
-        let plan =
-            match MissionPlan::from_draft(draft, p.mission_id, &p.slug, &p.objective, &base_ref) {
-                Ok(plan) => plan,
-                Err(e) => {
-                    self.fail_planning(&p, format!("invalid plan: {e}"));
-                    return;
-                }
-            };
-        self.begin_mission(plan, Some((p.order_id, p.started_at, outcome)))
-            .await;
+        match MissionPlan::from_draft(
+            draft.clone(),
+            mission,
+            &conf.slug,
+            &conf.objective,
+            &base_ref,
+        ) {
+            Ok(_) => {
+                conf.auto_retries = 0;
+                conf.revision += 1;
+                conf.latest_proposal = Some((conf.revision, draft.clone()));
+                self.shared.emit(BridgeEvent::PlanProposed {
+                    mission,
+                    revision: conf.revision,
+                    plan: draft,
+                    diff: None,
+                });
+            }
+            Err(e) if conf.auto_retries < 2 => {
+                conf.auto_retries += 1;
+                self.start_captain_turn(format!("{}{e}", prompts::PLAN_REJECTED_PREFIX));
+            }
+            Err(e) => {
+                conf.auto_retries = 0;
+                let revision = conf.revision;
+                self.shared.emit(BridgeEvent::ProposalRejected {
+                    mission,
+                    revision,
+                    reason: e.to_string(),
+                });
+            }
+        }
     }
 
-    fn fail_planning(&mut self, p: &Planning, reason: String) {
-        tracing::error!("planning failed: {reason}");
-        self.shared
-            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-                mission: p.mission_id,
-                state: MissionState::Failed {
-                    reason: reason.clone(),
-                },
-                detail: None,
-            }));
-        self.exit = Some(Err(MissionError::Planning(reason)));
+    async fn approve_proposal(&mut self, revision: u64) {
+        let Some(conf) = self.conference.as_mut() else {
+            tracing::warn!("ApproveProposal ignored: no conference");
+            return;
+        };
+        let mission = conf.mission_id;
+        match &conf.latest_proposal {
+            Some((rev, _)) if *rev == revision => {}
+            _ => {
+                self.shared.emit(BridgeEvent::ProposalRejected {
+                    mission,
+                    revision,
+                    reason: "stale or unknown proposal revision".into(),
+                });
+                return;
+            }
+        }
+        if conf.turn_in_flight.is_some() {
+            conf.approved = true; // in-flight turn's proposal will be discarded
+        }
+        let (_, draft) = conf.latest_proposal.clone().expect("checked above");
+        if self.mission.is_none() {
+            let (slug, objective) = (conf.slug.clone(), conf.objective.clone());
+            let base_ref = self
+                .shared
+                .blocking(|d| d.main_branch())
+                .await
+                .unwrap_or_else(|_| "main".into());
+            match MissionPlan::from_draft(draft, mission, &slug, &objective, &base_ref) {
+                Ok(plan) => {
+                    if let Some(c) = self.conference.as_mut() {
+                        c.latest_proposal = None;
+                    }
+                    self.begin_mission(plan, None).await;
+                }
+                Err(e) => {
+                    self.shared.emit(BridgeEvent::ProposalRejected {
+                        mission,
+                        revision,
+                        reason: format!("invalid plan: {e}"),
+                    });
+                }
+            }
+        }
+        // Mid-mission amendment application lands in Task 7.
     }
 
     /// Install the plan as the running mission; `captain_turn` carries the
@@ -1990,7 +2200,14 @@ where
                 && m.pending.is_empty()
                 && m.escalations.is_empty()
                 && m.queue.is_empty()
-                && self.planning.is_none();
+                // The conference persists after launch (for a later
+                // mid-mission amendment), so unlike the old mutually
+                // exclusive `planning` field this only blocks completion
+                // while an actual Captain turn is still in flight.
+                && self
+                    .conference
+                    .as_ref()
+                    .is_none_or(|c| c.turn_in_flight.is_none());
             // Flagged is deliberately NOT settled: the mission waits for the
             // user to OverrideFlagged or WindDown. winding_down collapses all
             // remaining states to settled so a wind-down always terminates.
@@ -2077,6 +2294,59 @@ where
             w.turns += 1;
         }
         let mission_id = m.plan.mission_id;
+        if let Err(e) = self.shared.deps.record_turn(mission_id, &record) {
+            tracing::warn!("failed to record turn: {e}");
+        }
+        self.shared.emit(BridgeEvent::TurnCompleted(record));
+        self.emit_budget();
+    }
+
+    /// Mirrors `record_turn_outcome`'s field mapping, but the conference has
+    /// no `Mission` to early-return through: it records against the
+    /// conference's mission id directly, and only touches mission-level
+    /// budget accounting when a mission is actually running (mid-mission
+    /// conference turns then count toward `max_total_turns`).
+    fn record_conference_turn(
+        &mut self,
+        order_id: OrderId,
+        started_at: DateTime<Utc>,
+        outcome: &TurnOutcome,
+    ) {
+        let Some(conf) = self.conference.as_ref() else {
+            return;
+        };
+        let mission_id = conf.mission_id;
+        let ws = WorkstreamId(mission_id.0);
+        let r = outcome.result.as_ref();
+        let record = bridge_core::TurnRecord {
+            order: order_id,
+            workstream: ws,
+            station: Station::Captain,
+            session: r.and_then(|x| x.session_id.clone()).map(SessionId),
+            started_at,
+            duration_ms: r.and_then(|x| x.duration_ms).unwrap_or(0),
+            num_turns: r.and_then(|x| x.num_turns).unwrap_or(0),
+            is_error: r
+                .map(|x| x.is_error)
+                .unwrap_or(outcome.exit != ExitClass::Success),
+            subtype: r
+                .map(|x| x.subtype.clone())
+                .unwrap_or_else(|| format!("{:?}", outcome.exit)),
+            total_cost_usd: r.and_then(|x| x.total_cost_usd),
+            input_tokens: r
+                .and_then(|x| x.usage.as_ref())
+                .and_then(|u| u.input_tokens),
+            output_tokens: r
+                .and_then(|x| x.usage.as_ref())
+                .and_then(|u| u.output_tokens),
+        };
+        if let Some(m) = self.mission.as_mut() {
+            m.total_turns += 1;
+            m.total_cost += record.total_cost_usd.unwrap_or(0.0);
+            if let Some(w) = m.ws.get_mut(&ws) {
+                w.turns += 1;
+            }
+        }
         if let Err(e) = self.shared.deps.record_turn(mission_id, &record) {
             tracing::warn!("failed to record turn: {e}");
         }
