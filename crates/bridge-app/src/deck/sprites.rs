@@ -257,13 +257,18 @@ pub fn console_visual(status: &WorkstreamStatus) -> ConsoleVisual {
     }
 }
 
+// Theme-invariant status colors: single-sourced here so `render.rs` (console
+// screen fills, overflow chips, tactical blink, side-console tiles) doesn't
+// keep its own copies.
+pub(crate) const AMBER: Rgb = Rgb(0xff, 0xb6, 0x48);
+pub(crate) const RED: Rgb = Rgb(0xff, 0x5a, 0x4e);
+pub(crate) const GREEN: Rgb = Rgb(0x3f, 0xd6, 0x8c);
+pub(crate) const CYAN: Rgb = Rgb(0x59, 0xc8, 0xff);
+/// Dim/off LED and unlit-screen color.
+pub(crate) const OFF: Rgb = Rgb(0x3a, 0x42, 0x62);
+
 /// (LED color, screen color if lit).
 pub fn visual_colors(v: ConsoleVisual) -> (Rgb, Option<Rgb>) {
-    const AMBER: Rgb = Rgb(0xff, 0xb6, 0x48);
-    const RED: Rgb = Rgb(0xff, 0x5a, 0x4e);
-    const GREEN: Rgb = Rgb(0x3f, 0xd6, 0x8c);
-    const CYAN: Rgb = Rgb(0x59, 0xc8, 0xff);
-    const OFF: Rgb = Rgb(0x3a, 0x42, 0x62);
     match v {
         ConsoleVisual::Unassigned | ConsoleVisual::Dim => (OFF, None),
         ConsoleVisual::Working => (AMBER, Some(AMBER)),

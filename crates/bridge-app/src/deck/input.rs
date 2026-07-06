@@ -102,7 +102,6 @@ pub fn hit_test(scene: &SceneState, x: f32, y: f32) -> Option<HitInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deck::DeckAction;
     use crate::deck::scene::{CHAIR, KOBA, SceneState, TACTICAL, VIEWSCREEN, console_box};
     use crate::state::AppState;
     use bridge_core::{BridgeEvent, WorkstreamId, WorkstreamStatus};

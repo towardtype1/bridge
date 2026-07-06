@@ -9,8 +9,9 @@ use crate::deck::scene::{
     TACTICAL, VIEWSCREEN, console_box,
 };
 use crate::deck::sprites::{
-    CHAIR_CAPT, CREW_BACK, CREW_WALK_A, CREW_WALK_B, ConsoleVisual, CrewColors, CrewStation,
-    EXCLAIM, Rgb, ScenePalette, SpriteMap, crew_colors, scene_palette, sprite_color, visual_colors,
+    AMBER, CHAIR_CAPT, CREW_BACK, CREW_WALK_A, CREW_WALK_B, CYAN, ConsoleVisual, CrewColors,
+    CrewStation, EXCLAIM, RED, Rgb, ScenePalette, SpriteMap, crew_colors, scene_palette,
+    sprite_color, visual_colors,
 };
 use crate::state::AppState;
 use bridge_core::DeckPalette;
@@ -68,11 +69,9 @@ fn draw_sprite(buf: &mut [egui::Color32], map: SpriteMap, x: i32, y: i32, colors
     }
 }
 
-// Local flash/accent colors that aren't part of `ScenePalette` (which
-// varies by theme) - these are deliberately theme-invariant status colors.
-const AMBER: Rgb = Rgb(0xff, 0xb6, 0x48);
-const RED: Rgb = Rgb(0xff, 0x5a, 0x4e);
-const CYAN: Rgb = Rgb(0x59, 0xc8, 0xff);
+// AMBER/RED/CYAN are theme-invariant status colors, single-sourced from
+// `sprites` (used by console screens/LEDs too). DARK_RED is a local-only
+// flicker accent for the Breached screen, not shared elsewhere.
 const DARK_RED: Rgb = Rgb(0x5e, 0x1f, 0x26);
 
 const WALL_H: i32 = 120;
@@ -242,9 +241,14 @@ fn paint_helm_consoles(
             {
                 sc = DARK_RED;
             }
-            fill_rect(buf, sx, sy, sw, sh, c32(sc));
-
             if slot.visual == ConsoleVisual::Working {
+                // Working must read as visually distinct from RebaseWarn
+                // (which stays a solid fill): dim the body toward the
+                // console housing, then draw the scroll lines in the
+                // bright status color so they're actually visible against
+                // it, instead of both being the same solid amber.
+                let dim = blend(sc, pal.console_body, 0.65);
+                fill_rect(buf, sx, sy, sw, sh, c32(dim));
                 let offset = if reduce_motion { 0.0 } else { now * 10.0 };
                 for k in 0..2_i32 {
                     let ly = sy
@@ -252,6 +256,8 @@ fn paint_helm_consoles(
                             as i32;
                     fill_rect(buf, sx + 1, ly, sw - 2, 1, c32(sc));
                 }
+            } else {
+                fill_rect(buf, sx, sy, sw, sh, c32(sc));
             }
         }
         fill_rect(buf, b.x + b.w - 6, b.y + b.h - 5, 3, 3, c32(led));
@@ -431,6 +437,9 @@ pub fn draw_deck(
     let scale = integer_scale(avail.width(), avail.height()) as f32;
     let size = egui::vec2(NATIVE_W as f32 * scale, NATIVE_H as f32 * scale);
     let rect = egui::Rect::from_center_size(avail.center(), size);
+    // Snap to integer screen coords: a half-pixel offset here would smear
+    // the NEAREST-filtered blit across texel boundaries.
+    let rect = egui::Rect::from_min_max(rect.min.round(), rect.max.round());
     let response = ui.allocate_rect(rect, egui::Sense::click());
     ui.painter().image(
         tex.id(),
@@ -458,7 +467,10 @@ pub fn draw_deck(
     if canvas.scene.any_motion() && !reduce_motion {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(16));
-    } else if canvas.scene.mission_live {
+    } else {
+        // Ambient starfield drift continues on an idle/paused/complete
+        // bridge too - not just while a mission is live - so this isn't
+        // gated on `mission_live`.
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
     }
@@ -525,6 +537,47 @@ mod tests {
         assert_eq!(
             buf[ly * NATIVE_W + lx],
             egui::Color32::from_rgb(0xff, 0xb6, 0x48)
+        );
+    }
+
+    #[test]
+    fn working_console_dims_body_but_keeps_scroll_lines_bright() {
+        // reduce_motion pins the scroll offset at 0.0, so with i = 0 (first
+        // console) the two scroll lines land at rows sy+0 and sy+4 (the
+        // `(offset + i + k*4).rem_euclid(sh)` math at k = 0, 1). sh = 8 for
+        // console 0, so sy+2 is a deterministic body-only row: not a
+        // scroll line, and not wrapped-around into one either.
+        let mut buf = vec![egui::Color32::BLACK; NATIVE_W * NATIVE_H];
+        let mut app = AppState::default();
+        app.apply(BridgeEvent::WorkstreamStatus {
+            id: WorkstreamId::new(),
+            status: WorkstreamStatus::Working,
+        });
+        let mut scene = SceneState::default();
+        let now = 1.0;
+        scene.sync(&app, now, true);
+        paint_scene(
+            &mut buf,
+            &scene,
+            scene_palette(DeckPalette::Federation),
+            now,
+            true,
+        );
+        let b = console_box(0);
+        let sx = (b.x + 3) as usize;
+        let sy = b.y + 3;
+        let bright = egui::Color32::from_rgb(0xff, 0xb6, 0x48); // AMBER
+
+        let scroll_line = buf[sy as usize * NATIVE_W + sx + 1];
+        assert_eq!(
+            scroll_line, bright,
+            "scroll-line pixel must stay in the bright status color"
+        );
+
+        let body = buf[(sy + 2) as usize * NATIVE_W + sx + 1];
+        assert_ne!(
+            body, bright,
+            "console body must be dimmed, not solid bright, behind the scroll lines"
         );
     }
 

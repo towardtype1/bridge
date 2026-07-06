@@ -126,10 +126,27 @@ pub struct SceneState {
     pub koba_active: bool,
     pub tactical_blink_until: f64,
     pub mission_live: bool,
-    seen: HashSet<WorkstreamId>,
+    /// Console slot lifecycle, persistent across syncs: `slots[i]` is the
+    /// workstream currently manning console `i`, or `None` if empty. Unlike
+    /// `consoles` (rebuilt declaratively every call from this), a slot
+    /// assignment sticks until explicitly released.
+    slots: Vec<Option<WorkstreamId>>,
     prev_status: std::collections::HashMap<WorkstreamId, WorkstreamStatus>,
-    last_hook_len: usize,
+    /// Timestamp of the newest tactical-feed record seen so far. Edge-
+    /// triggers the blink on identity/recency rather than feed length,
+    /// since `push_bounded` front-trims the feed at `MAX_FEED` - length
+    /// alone stalls forever once the feed saturates.
+    last_hook_ts: Option<chrono::DateTime<chrono::Utc>>,
     last_now: f64,
+}
+
+/// True once a workstream has reached a terminal, departed state: its
+/// console slot may be reclaimed once its agent has also left the deck.
+fn is_departed(app: &AppState, id: &WorkstreamId) -> bool {
+    matches!(
+        app.workstreams.get(id).and_then(|p| p.status.as_ref()),
+        Some(WorkstreamStatus::Merged)
+    )
 }
 
 impl SceneState {
@@ -142,9 +159,48 @@ impl SceneState {
 
         self.mission_live = matches!(app.mission_state, Some(MissionState::Executing));
 
-        // Declarative: console slots from first-seen order.
-        self.consoles = (0..MAX_CONSOLES)
-            .map(|i| match app.workstream_order.get(i) {
+        if self.slots.len() != MAX_CONSOLES {
+            self.slots = vec![None; MAX_CONSOLES];
+        }
+
+        // (a) Release a slot once its workstream has departed (Merged) and
+        // its agent has actually left the deck - not the moment it merges,
+        // so a departing agent's console keeps showing Merged green while
+        // it's still walking out.
+        for slot in &mut self.slots {
+            if let Some(id) = *slot {
+                let has_agent = self.agents.iter().any(|a| a.ws == id);
+                if is_departed(app, &id) && !has_agent {
+                    *slot = None;
+                }
+            }
+        }
+
+        // (b) Fill empty slots, left to right, with the earliest
+        // not-yet-slotted, still-live workstreams. A slot assignment made
+        // here is exactly the "ws first gets a slot" edge: it can't have
+        // been in `slotted` before, so it wasn't assigned in any prior
+        // sync either.
+        let slotted: HashSet<WorkstreamId> = self.slots.iter().flatten().copied().collect();
+        let mut candidates = app
+            .workstream_order
+            .iter()
+            .filter(|id| !slotted.contains(id) && !is_departed(app, id));
+        let mut newly_assigned: Vec<(usize, WorkstreamId)> = Vec::new();
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if slot.is_none()
+                && let Some(&id) = candidates.next()
+            {
+                *slot = Some(id);
+                newly_assigned.push((i, id));
+            }
+        }
+
+        // (c) Rebuild the declarative console view from slots.
+        self.consoles = self
+            .slots
+            .iter()
+            .map(|slot| match slot {
                 Some(id) => ConsoleSlot {
                     ws: Some(*id),
                     visual: app.workstreams[id]
@@ -159,7 +215,12 @@ impl SceneState {
                 },
             })
             .collect();
-        self.overflow = app.workstream_order.len().saturating_sub(MAX_CONSOLES) as u32;
+        let slotted_now: HashSet<WorkstreamId> = self.slots.iter().flatten().copied().collect();
+        self.overflow = app
+            .workstream_order
+            .iter()
+            .filter(|id| !slotted_now.contains(id) && !is_departed(app, id))
+            .count() as u32;
 
         self.koba_active = app
             .workstreams
@@ -167,33 +228,33 @@ impl SceneState {
             .any(|p| matches!(p.status, Some(WorkstreamStatus::UnderTest { .. })));
 
         // --- edge-triggered transients ------------------------------------
-        for (i, id) in app.workstream_order.iter().take(MAX_CONSOLES).enumerate() {
-            if self.seen.insert(*id) {
-                let target = stand_point(i);
-                let start = ((LIFT.x + 9) as f32, (LIFT.y + 8) as f32);
-                self.agents.push(if reduce_motion {
-                    Agent {
-                        ws: *id,
-                        x: target.0,
-                        y: target.1,
-                        path: Vec::new(),
-                        phase: AgentPhase::Seated,
-                        alarm_until: 0.0,
-                        hair: i + 1,
-                    }
-                } else {
-                    Agent {
-                        ws: *id,
-                        x: start.0,
-                        y: start.1,
-                        path: vec![(start.0, WALK_Y), (target.0, WALK_Y), target],
-                        phase: AgentPhase::Walking,
-                        alarm_until: 0.0,
-                        hair: i + 1,
-                    }
-                });
-            }
+        for (i, id) in newly_assigned {
+            let target = stand_point(i);
+            let start = ((LIFT.x + 9) as f32, (LIFT.y + 8) as f32);
+            self.agents.push(if reduce_motion {
+                Agent {
+                    ws: id,
+                    x: target.0,
+                    y: target.1,
+                    path: Vec::new(),
+                    phase: AgentPhase::Seated,
+                    alarm_until: 0.0,
+                    hair: i + 1,
+                }
+            } else {
+                Agent {
+                    ws: id,
+                    x: start.0,
+                    y: start.1,
+                    path: vec![(start.0, WALK_Y), (target.0, WALK_Y), target],
+                    phase: AgentPhase::Walking,
+                    alarm_until: 0.0,
+                    hair: i + 1,
+                }
+            });
+        }
 
+        for id in &app.workstream_order {
             let status = app.workstreams[id].status.clone();
             let prev = self.prev_status.get(id);
             let became = |m: fn(&WorkstreamStatus) -> bool| {
@@ -223,13 +284,15 @@ impl SceneState {
             }
         }
 
-        if app.tactical_feed.len() > self.last_hook_len
-            && let Some(newest) = app.tactical_feed.last()
-            && newest.decision != DecisionKind::Allow
-        {
-            self.tactical_blink_until = now + 1.5;
+        if let Some(newest) = app.tactical_feed.last() {
+            let is_new = self.last_hook_ts.is_none_or(|ts| newest.timestamp > ts);
+            if is_new {
+                if newest.decision != DecisionKind::Allow {
+                    self.tactical_blink_until = now + 1.5;
+                }
+                self.last_hook_ts = Some(newest.timestamp);
+            }
         }
-        self.last_hook_len = app.tactical_feed.len();
 
         self.advance_agents(dt);
         self.agents.retain(|a| a.phase != AgentPhase::Gone);
@@ -317,6 +380,55 @@ mod tests {
         scene.sync(&app, 0.0, true);
         assert_eq!(scene.consoles.len(), MAX_CONSOLES);
         assert_eq!(scene.overflow, 2);
+    }
+
+    #[test]
+    fn merging_early_workstream_frees_its_slot_for_the_ninth() {
+        let mut app = app_with(&vec![WorkstreamStatus::Working; 9]);
+        let ids = app.workstream_order.clone();
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true); // reduce_motion: agents seated instantly
+
+        // First 8 slotted in order; the 9th overflows with no console/agent.
+        assert_eq!(scene.consoles.len(), MAX_CONSOLES);
+        for (i, id) in ids.iter().take(MAX_CONSOLES).enumerate() {
+            assert_eq!(scene.consoles[i].ws, Some(*id));
+        }
+        assert_eq!(scene.overflow, 1);
+        assert_eq!(scene.agents.len(), MAX_CONSOLES);
+        assert!(!scene.agents.iter().any(|a| a.ws == ids[8]));
+
+        // Merge the first workstream. Its slot isn't reclaimed until its
+        // agent has actually departed (this sync sees it merged but the
+        // agent is still present from last frame, so nothing moves yet).
+        app.apply(BridgeEvent::WorkstreamStatus {
+            id: ids[0],
+            status: WorkstreamStatus::Merged,
+        });
+        scene.sync(&app, 1.0, true);
+        assert_eq!(
+            scene.consoles[0].ws,
+            Some(ids[0]),
+            "slot holds Merged green while its agent is still walking out"
+        );
+        assert_eq!(
+            scene.consoles[0].visual,
+            crate::deck::sprites::ConsoleVisual::Merged
+        );
+
+        // Next sync: the departed workstream's agent is gone, so its slot
+        // frees and goes to the earliest unslotted, still-live workstream.
+        scene.sync(&app, 1.1, true);
+        assert_eq!(
+            scene.consoles[0].ws,
+            Some(ids[8]),
+            "freed slot goes to the earliest unslotted workstream"
+        );
+        assert_eq!(scene.overflow, 0);
+        assert!(
+            scene.agents.iter().any(|a| a.ws == ids[8]),
+            "the ninth workstream gets a walk-in agent once it is slotted"
+        );
     }
 
     #[test]
@@ -452,5 +564,60 @@ mod tests {
         }));
         scene.sync(&app, 2.0, true);
         assert!(scene.tactical_blink_until > 2.0);
+    }
+
+    #[test]
+    fn tactical_blink_survives_feed_saturating_past_max_feed() {
+        use bridge_core::{DecisionKind, DecisionSource, HookDecisionRecord};
+        let mut app = app_with(&[WorkstreamStatus::Working]);
+        let ws = app.workstream_order[0];
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true);
+
+        let base = chrono::Utc::now();
+        for i in 0..(crate::state::MAX_FEED + 5) {
+            app.apply(BridgeEvent::HookDecision(HookDecisionRecord {
+                timestamp: base + chrono::Duration::milliseconds(i as i64),
+                workstream: ws,
+                hook_event: "PreToolUse".into(),
+                tool_name: Some("Bash".into()),
+                decision: DecisionKind::Allow,
+                reason: None,
+                rule: format!("r{i}"),
+                source: DecisionSource::Passthrough,
+                latency_ms: 1,
+            }));
+        }
+        assert_eq!(
+            app.tactical_feed.len(),
+            crate::state::MAX_FEED,
+            "feed is bounded"
+        );
+        // Sync once while the feed is already saturated at MAX_FEED - this
+        // is what used to permanently disarm the len-based cursor.
+        scene.sync(&app, 1.0, true);
+        assert_eq!(scene.tactical_blink_until, 0.0);
+
+        app.apply(BridgeEvent::HookDecision(HookDecisionRecord {
+            timestamp: base + chrono::Duration::milliseconds((crate::state::MAX_FEED + 100) as i64),
+            workstream: ws,
+            hook_event: "PreToolUse".into(),
+            tool_name: Some("Bash".into()),
+            decision: DecisionKind::Deny,
+            reason: Some("outside worktree".into()),
+            rule: "path-policy".into(),
+            source: DecisionSource::PrimeDirective,
+            latency_ms: 3,
+        }));
+        assert_eq!(
+            app.tactical_feed.len(),
+            crate::state::MAX_FEED,
+            "still bounded after the deny push"
+        );
+        scene.sync(&app, 2.0, true);
+        assert!(
+            scene.tactical_blink_until > 2.0,
+            "blink must fire even though the feed length never grew past MAX_FEED"
+        );
     }
 }
