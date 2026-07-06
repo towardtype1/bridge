@@ -6,6 +6,7 @@
 //! work is harness code (scheduling, worktree lifecycle, policy); they
 //! appear in logs and turn accounting but never hold a model session.
 
+pub mod amendment;
 pub mod controller;
 pub mod engineering;
 pub mod kobayashi;
