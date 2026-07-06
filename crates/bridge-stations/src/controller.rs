@@ -348,14 +348,13 @@ where
     D: TurnPort + GitPort + TacticalPort + ComputerPort,
 {
     async fn event_loop(mut self) -> Result<(), MissionError> {
-        loop {
+        let exit = loop {
             tokio::select! {
                 cmd = self.commands.recv() => match cmd {
                     Some(c) => self.handle_command(c).await,
                     None => {
                         // GUI hung up: graceful shutdown.
-                        self.shared.abort_tasks();
-                        return if self.mission.is_some() || self.planning.is_some() {
+                        break if self.mission.is_some() || self.planning.is_some() {
                             Err(MissionError::ChannelClosed)
                         } else {
                             Ok(())
@@ -365,9 +364,36 @@ where
                 Some(msg) = self.internal_rx.recv() => self.handle_internal(msg).await,
             }
             if let Some(exit) = self.exit.take() {
-                self.shared.abort_tasks();
-                return exit;
+                break exit;
             }
+        };
+        self.shared.abort_tasks();
+        // Single cleanup point: tear down every provisioned worktree and its
+        // installed hooks + Tactical arming. Merged work is always removed;
+        // unmerged work is kept only when keep_on_failure is set, so a user
+        // can inspect a failed or shut-down mission's worktrees.
+        self.decommission_all().await;
+        exit
+    }
+
+    /// Decommission all still-provisioned workstream worktrees. Best-effort:
+    /// engineering::decommission logs rather than propagates.
+    async fn decommission_all(&mut self) {
+        let Some(m) = self.mission.as_mut() else { return };
+        let keep_on_failure = self.shared.config.worktrees.keep_on_failure;
+        let jobs: Vec<(WorkstreamId, ProvisionedWorktree, bool)> = m
+            .ws
+            .iter_mut()
+            .filter_map(|(id, w)| {
+                let provisioned = w.provisioned.take()?;
+                let merged = matches!(w.status, WorkstreamStatus::Merged);
+                Some((*id, provisioned, !merged && keep_on_failure))
+            })
+            .collect();
+        for (ws, provisioned, keep) in jobs {
+            self.shared
+                .blocking(move |d| engineering::decommission(d, d, ws, &provisioned, keep))
+                .await;
         }
     }
 

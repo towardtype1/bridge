@@ -272,6 +272,19 @@ async fn full_mission_two_parallel_workstreams() {
     assert_eq!(deps.recorded_completes.lock().unwrap().len(), 1);
 
     assert!(matches!(rig.finish().await, Ok(())));
+
+    // Both merged workstreams' implementation worktrees are decommissioned
+    // on mission end (disarmed from Tactical + force-removed). Throwaway
+    // Kobayashi worktrees are removed mid-mission; here we assert the two
+    // implementation worktrees are gone and both workstreams disarmed.
+    let disarmed = deps.disarmed.lock().unwrap().clone();
+    assert!(disarmed.contains(&first) && disarmed.contains(&second), "both disarmed: {disarmed:?}");
+    let impl_removed = deps
+        .git_log()
+        .into_iter()
+        .filter(|c| matches!(c, GitCall::RemoveWorktree { path, .. } if !path.to_string_lossy().contains("throwaway")))
+        .count();
+    assert_eq!(impl_removed, 2, "both implementation worktrees removed on mission end");
 }
 
 // ---------------------------------------------------------------------------
