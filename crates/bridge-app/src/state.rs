@@ -77,6 +77,9 @@ pub struct UiInputs {
     /// Deck's viewscreen clicked: shows the Mission Status interim window
     /// (mission title/state, merge queue, budget, Wind down / Stop).
     pub open_mission_status: bool,
+    /// Hailing the Captain on the deck clicked: shows the Captain interim
+    /// window (conference transcript and the latest plan proposal card).
+    pub open_captain: bool,
 }
 
 pub const MAX_FEED: usize = 2_000;

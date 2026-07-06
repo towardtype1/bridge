@@ -5,14 +5,16 @@
 //! `CentralPanel` spans the entire remaining viewport now that the
 //! Apple-minimal left sidebar and right inspector are gone.
 //! - No app toolbar; the OS supplies the title bar.
-//! - Center: the deck (`crate::deck::render::draw_deck`) plus five interim
+//! - Center: the deck (`crate::deck::render::draw_deck`) plus six interim
 //!   `egui::Window`s opened by deck clicks: workstream detail (title +
 //!   status pill + "Open in VS Code" (+ Override while Flagged), a
 //!   station/branch subtitle, a battle-report card, turn history, and the
 //!   activity feed), Tactical (the exceptions-only Guardrails feed),
 //!   Kobayashi Maru (battle-report summaries), Ship's Computer (the Ship's
-//!   Log), and Mission Status (mission title/state, the merge queue, budget
-//!   usage, and the Wind down / Stop commands - formerly sidebar chrome).
+//!   Log), Mission Status (mission title/state, the merge queue, budget
+//!   usage, and the Wind down / Stop commands - formerly sidebar chrome),
+//!   and Captain (the conference transcript and the latest plan proposal
+//!   card, opened by hailing the Captain on the deck).
 //! - Bottom composer: a rounded field addressed to the Captain; Enter or the
 //!   circular send button starts a mission.
 //! - Conditional top banners: paused (rate-limit / budget) and compat warning.
@@ -26,7 +28,8 @@
 //! building the root `Ui` itself, exactly as `Context::run_ui` does.
 
 use crate::state::{
-    AppState, escalation_remaining_secs, format_duration_secs, mission_state_label, status_label,
+    AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
+    status_label,
 };
 use crate::theme::{self, ThemeMode, Tokens};
 use bridge_core::{
@@ -95,7 +98,7 @@ pub fn apply_deck_action(state: &mut AppState, action: crate::deck::DeckAction) 
     use crate::deck::DeckAction as A;
     match action {
         A::SelectWorkstream(id) => state.ui.selected = Some(id),
-        A::HailCaptain => state.ui.selected = None,
+        A::HailCaptain => state.ui.open_captain = true,
         A::OpenTactical => state.ui.open_tactical = true,
         A::OpenKobayashi => state.ui.open_kobayashi = true,
         A::OpenComputer => state.ui.open_computer = true,
@@ -541,6 +544,7 @@ fn center(
     kobayashi_window(&ctx, t, state);
     computer_window(&ctx, t, state);
     mission_status_window(&ctx, t, state, out);
+    captain_window(&ctx, t, state, out);
 }
 
 /// Selecting a console on the deck opens this window; closing it (the
@@ -847,6 +851,97 @@ fn budget_group(ui: &mut egui::Ui, t: &Tokens, budget: &BudgetSnapshot) {
                 .monospace(),
         );
     }
+}
+
+/// Hailing the Captain from the deck opens this window: the conference
+/// transcript and the latest plan proposal card.
+fn captain_window(
+    ctx: &egui::Context,
+    t: &Tokens,
+    state: &mut AppState,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let mut open = state.ui.open_captain;
+    if !open {
+        return;
+    }
+    egui::Window::new("Captain")
+        .open(&mut open)
+        .default_size(egui::vec2(560.0, 520.0))
+        .show(ctx, |ui| {
+            captain_view(ui, t, state, out);
+        });
+    state.ui.open_captain = open;
+}
+
+/// Interim conversation surface: transcript and latest proposal card. The
+/// Ship's Computer window owns the Ship's Log; this window doesn't repeat
+/// it. Sub-project C replaces this with the deck dialogue.
+fn captain_view(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeCommand>) {
+    section_label(ui, t, "Captain");
+    ui.add_space(8.0);
+    if let Some(card_data) = &state.latest_proposal {
+        card(ui, t, |ui| {
+            ui.label(
+                RichText::new(format!("Proposed plan - revision {}", card_data.revision))
+                    .color(t.text)
+                    .size(13.0)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            for ws in &card_data.plan.workstreams {
+                let marker = match &card_data.diff {
+                    Some(d) if d.added.contains(&ws.slug) => "+",
+                    Some(d) if d.revised.contains(&ws.slug) => "~",
+                    _ => "-",
+                };
+                ui.label(
+                    RichText::new(format!("{marker} {}  {}", ws.slug, ws.title))
+                        .color(t.text_2)
+                        .size(12.5)
+                        .monospace(),
+                );
+            }
+            if let Some(d) = &card_data.diff {
+                for slug in &d.removed {
+                    ui.label(
+                        RichText::new(format!("x {slug}  (cancelled)"))
+                            .color(t.crit)
+                            .size(12.5)
+                            .monospace(),
+                    );
+                }
+            }
+            ui.add_space(8.0);
+            let btn =
+                egui::Button::new(RichText::new("Make it so").color(Color32::WHITE).size(12.5))
+                    .fill(t.accent);
+            if ui.add(btn).clicked() {
+                out.push(BridgeCommand::ApproveProposal {
+                    revision: card_data.revision,
+                });
+            }
+        });
+        ui.add_space(12.0);
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("captain_feed")
+        .stick_to_bottom(true)
+        .max_height(ui.available_height() * 0.5)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (speaker, text) in &state.captain_feed {
+                let (name, color) = match speaker {
+                    CaptainSpeaker::You => ("You", t.text_2),
+                    CaptainSpeaker::Captain => ("Captain", t.accent),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(name).color(color).size(12.5).strong());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(text).color(t.text).size(13.5));
+                });
+            }
+        });
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
@@ -1176,8 +1271,9 @@ mod tests {
         assert!(state.ui.open_computer);
         apply_deck_action(&mut state, crate::deck::DeckAction::OpenMissionStatus);
         assert!(state.ui.open_mission_status);
-        // HailCaptain clears workstream selection (captain has no panel yet; A adds it).
+        // HailCaptain opens the Captain window (the deck itself never shows
+        // the conference; it's a stock `egui::Window` like the others).
         apply_deck_action(&mut state, crate::deck::DeckAction::HailCaptain);
-        assert_eq!(state.ui.selected, None);
+        assert!(state.ui.open_captain);
     }
 }
