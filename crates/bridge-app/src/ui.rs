@@ -211,52 +211,58 @@ fn paused_banner(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<
     let frame = egui::Frame::new()
         .fill(theme::tint(t.warn, t.bg, 0.14))
         .inner_margin(egui::Margin::symmetric(20, 10));
-    egui::Panel::top("paused_banner").frame(frame).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            dot(ui, t.warn, false);
-            ui.add_space(6.0);
-            match &reason {
-                PauseReason::RateLimited { retry_at } => {
-                    let text = state.rate_limit_countdown_text(Utc::now()).unwrap_or_else(|| {
-                        match retry_at {
-                            Some(at) => {
-                                format!("Rate limited - retry at {}", at.format("%H:%M:%S UTC"))
-                            }
-                            None => "Rate limited - waiting for reset".to_owned(),
+    egui::Panel::top("paused_banner")
+        .frame(frame)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                dot(ui, t.warn, false);
+                ui.add_space(6.0);
+                match &reason {
+                    PauseReason::RateLimited { retry_at } => {
+                        let text =
+                            state
+                                .rate_limit_countdown_text(Utc::now())
+                                .unwrap_or_else(|| match retry_at {
+                                    Some(at) => {
+                                        format!(
+                                            "Rate limited - retry at {}",
+                                            at.format("%H:%M:%S UTC")
+                                        )
+                                    }
+                                    None => "Rate limited - waiting for reset".to_owned(),
+                                });
+                        ui.label(RichText::new(text).color(t.warn).strong());
+                    }
+                    PauseReason::BudgetExhausted { which } => {
+                        ui.label(
+                            RichText::new(format!("Paused - budget exhausted ({which})"))
+                                .color(t.warn)
+                                .strong(),
+                        );
+                        ui.add_space(10.0);
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("+20 turns").color(t.accent))
+                                    .fill(t.fill),
+                            )
+                            .clicked()
+                        {
+                            out.push(BridgeCommand::ExtendBudget(BudgetExtension {
+                                extra_total_turns: 20,
+                                ..BudgetExtension::default()
+                            }));
                         }
-                    });
-                    ui.label(RichText::new(text).color(t.warn).strong());
-                }
-                PauseReason::BudgetExhausted { which } => {
-                    ui.label(
-                        RichText::new(format!("Paused - budget exhausted ({which})"))
-                            .color(t.warn)
-                            .strong(),
-                    );
-                    ui.add_space(10.0);
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("+20 turns").color(t.accent))
-                                .fill(t.fill),
-                        )
-                        .clicked()
-                    {
-                        out.push(BridgeCommand::ExtendBudget(BudgetExtension {
-                            extra_total_turns: 20,
-                            ..BudgetExtension::default()
-                        }));
+                    }
+                    PauseReason::UserRequested => {
+                        ui.label(
+                            RichText::new("Paused - user requested")
+                                .color(t.warn)
+                                .strong(),
+                        );
                     }
                 }
-                PauseReason::UserRequested => {
-                    ui.label(
-                        RichText::new("Paused - user requested")
-                            .color(t.warn)
-                            .strong(),
-                    );
-                }
-            }
+            });
         });
-    });
 }
 
 fn compat_banner(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
@@ -266,31 +272,38 @@ fn compat_banner(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
     let frame = egui::Frame::new()
         .fill(theme::tint(t.warn, t.bg, 0.14))
         .inner_margin(egui::Margin::symmetric(20, 10));
-    egui::Panel::top("compat_banner").frame(frame).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            dot(ui, t.warn, false);
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(format!(
-                    "claude {detected} is outside the tested range {min} - {max}"
-                ))
-                .color(t.warn)
-                .strong(),
-            );
-            ui.add_space(10.0);
-            if ui
-                .add(egui::Button::new("Proceed anyway").fill(t.fill))
-                .clicked()
-            {
-                state.compat_warning = None;
-            }
+    egui::Panel::top("compat_banner")
+        .frame(frame)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                dot(ui, t.warn, false);
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "claude {detected} is outside the tested range {min} - {max}"
+                    ))
+                    .color(t.warn)
+                    .strong(),
+                );
+                ui.add_space(10.0);
+                if ui
+                    .add(egui::Button::new("Proceed anyway").fill(t.fill))
+                    .clicked()
+                {
+                    state.compat_warning = None;
+                }
+            });
         });
-    });
 }
 
 // -- composer -----------------------------------------------------------------
 
-fn bottom_composer(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState, out: &mut Vec<BridgeCommand>) {
+fn bottom_composer(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    state: &mut AppState,
+    out: &mut Vec<BridgeCommand>,
+) {
     let frame = egui::Frame::new()
         .fill(t.surface_2)
         .inner_margin(egui::Margin::symmetric(20, 14));
@@ -373,7 +386,12 @@ fn left_sidebar(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState, out: &mut V
                     resp.on_hover_text(mission_state_label(ms));
                 }
                 ui.add_space(6.0);
-                ui.label(RichText::new(mission_title(state)).color(t.text).size(15.0).strong());
+                ui.label(
+                    RichText::new(mission_title(state))
+                        .color(t.text)
+                        .size(15.0)
+                        .strong(),
+                );
             });
             ui.add_space(18.0);
 
@@ -509,7 +527,11 @@ fn merge_queue_group(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
                 );
                 let done = matches!(entry.state, MergeQueueState::Done);
                 let color = if done { t.good } else { t.text_2 };
-                ui.label(RichText::new(merge_state_label(entry.state)).color(color).size(11.0));
+                ui.label(
+                    RichText::new(merge_state_label(entry.state))
+                        .color(color)
+                        .size(11.0),
+                );
             });
         });
         ui.add_space(6.0);
@@ -624,14 +646,20 @@ fn center(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeC
 
         // Title row: name + status pill + right-aligned actions.
         ui.horizontal(|ui| {
-            ui.label(RichText::new(short_id(&selected)).color(t.text).size(26.0).strong());
+            ui.label(
+                RichText::new(short_id(&selected))
+                    .color(t.text)
+                    .size(26.0)
+                    .strong(),
+            );
             ui.add_space(10.0);
             if let Some(status) = &status {
                 pill(ui, t, &status_label(status), status_color(status, t));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let open = egui::Button::new(RichText::new("Open in VS Code").color(t.text).size(12.5))
-                    .fill(t.fill);
+                let open =
+                    egui::Button::new(RichText::new("Open in VS Code").color(t.text).size(12.5))
+                        .fill(t.fill);
                 if ui.add_enabled(worktree_path.is_some(), open).clicked()
                     && let Some(path) = &worktree_path
                 {
@@ -672,7 +700,12 @@ fn center(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeC
             (None, None) => short_id(&selected),
         };
         ui.add_space(2.0);
-        ui.label(RichText::new(subtitle).color(t.text_3).size(12.0).monospace());
+        ui.label(
+            RichText::new(subtitle)
+                .color(t.text_3)
+                .size(12.0)
+                .monospace(),
+        );
         ui.add_space(16.0);
 
         battle_report_card(ui, t, state, selected);
@@ -859,62 +892,75 @@ fn escalation_modal(
     };
     let more_pending = state.escalations.len() - 1;
     let mut decision: Option<UserDecision> = None;
-    egui::Window::new(RichText::new("Escalation").color(t.text).size(15.0).strong())
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(window_frame(t))
-        .show(ctx, |ui| {
-            ui.label(RichText::new(&ticket.question).color(t.text).size(15.0).strong());
-            ui.add_space(8.0);
-            if let Some(tool) = &ticket.tool_name {
-                ui.label(RichText::new(tool).color(t.text_2).size(12.5).monospace());
+    egui::Window::new(
+        RichText::new("Escalation")
+            .color(t.text)
+            .size(15.0)
+            .strong(),
+    )
+    .collapsible(false)
+    .resizable(false)
+    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+    .frame(window_frame(t))
+    .show(ctx, |ui| {
+        ui.label(
+            RichText::new(&ticket.question)
+                .color(t.text)
+                .size(15.0)
+                .strong(),
+        );
+        ui.add_space(8.0);
+        if let Some(tool) = &ticket.tool_name {
+            ui.label(RichText::new(tool).color(t.text_2).size(12.5).monospace());
+        }
+        ui.label(
+            RichText::new(&ticket.tool_input_summary)
+                .color(t.text_3)
+                .size(12.0)
+                .monospace(),
+        );
+        ui.add_space(8.0);
+        let remaining = escalation_remaining_secs(&ticket, Utc::now());
+        ui.label(
+            RichText::new(format!(
+                "Auto-deny in {}",
+                format_duration_secs(remaining as u64)
+            ))
+            .color(t.crit)
+            .size(12.5),
+        );
+        ui.add_space(10.0);
+        let reason = state.ui.deny_reasons.entry(ticket.id).or_default();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Deny reason").color(t.text_2).size(12.0));
+            ui.text_edit_singleline(reason);
+        });
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add(egui::Button::new(RichText::new("Approve").color(Color32::WHITE)).fill(t.good))
+                .clicked()
+            {
+                decision = Some(UserDecision::Approve);
             }
-            ui.label(
-                RichText::new(&ticket.tool_input_summary)
-                    .color(t.text_3)
-                    .size(12.0)
-                    .monospace(),
-            );
-            ui.add_space(8.0);
-            let remaining = escalation_remaining_secs(&ticket, Utc::now());
-            ui.label(
-                RichText::new(format!("Auto-deny in {}", format_duration_secs(remaining as u64)))
-                    .color(t.crit)
-                    .size(12.5),
-            );
-            ui.add_space(10.0);
-            let reason = state.ui.deny_reasons.entry(ticket.id).or_default();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Deny reason").color(t.text_2).size(12.0));
-                ui.text_edit_singleline(reason);
-            });
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(egui::Button::new(RichText::new("Approve").color(Color32::WHITE)).fill(t.good))
-                    .clicked()
-                {
-                    decision = Some(UserDecision::Approve);
-                }
-                if ui
-                    .add(egui::Button::new(RichText::new("Deny").color(Color32::WHITE)).fill(t.crit))
-                    .clicked()
-                {
-                    decision = Some(UserDecision::Deny {
-                        reason: reason.clone(),
-                    });
-                }
-            });
-            if more_pending > 0 {
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(format!("{more_pending} more pending"))
-                        .color(t.text_3)
-                        .size(11.0),
-                );
+            if ui
+                .add(egui::Button::new(RichText::new("Deny").color(Color32::WHITE)).fill(t.crit))
+                .clicked()
+            {
+                decision = Some(UserDecision::Deny {
+                    reason: reason.clone(),
+                });
             }
         });
+        if more_pending > 0 {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("{more_pending} more pending"))
+                    .color(t.text_3)
+                    .size(11.0),
+            );
+        }
+    });
     if let Some(decision) = decision {
         out.push(BridgeCommand::ResolveEscalation {
             id: ticket.id,
@@ -934,43 +980,51 @@ fn merge_modal(
         return;
     };
     let mut approved: Option<bool> = None;
-    egui::Window::new(RichText::new("Confirm merge").color(t.text).size(15.0).strong())
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 40.0))
-        .frame(window_frame(t))
-        .show(ctx, |ui| {
-            ui.label(
-                RichText::new(format!("{} -> {}", proposal.branch, proposal.target))
-                    .color(t.text)
-                    .size(14.0)
-                    .monospace(),
-            );
-            ui.add_space(8.0);
-            ui.label(RichText::new(&proposal.summary).color(t.text_2).size(13.0));
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(&proposal.diff_stat)
-                    .color(t.text_3)
-                    .size(12.0)
-                    .monospace(),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add(egui::Button::new(RichText::new("Confirm").color(Color32::WHITE)).fill(t.accent))
-                    .clicked()
-                {
-                    approved = Some(true);
-                }
-                if ui
-                    .add(egui::Button::new(RichText::new("Reject").color(t.text)).fill(t.fill))
-                    .clicked()
-                {
-                    approved = Some(false);
-                }
-            });
+    egui::Window::new(
+        RichText::new("Confirm merge")
+            .color(t.text)
+            .size(15.0)
+            .strong(),
+    )
+    .collapsible(false)
+    .resizable(false)
+    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 40.0))
+    .frame(window_frame(t))
+    .show(ctx, |ui| {
+        ui.label(
+            RichText::new(format!("{} -> {}", proposal.branch, proposal.target))
+                .color(t.text)
+                .size(14.0)
+                .monospace(),
+        );
+        ui.add_space(8.0);
+        ui.label(RichText::new(&proposal.summary).color(t.text_2).size(13.0));
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(&proposal.diff_stat)
+                .color(t.text_3)
+                .size(12.0)
+                .monospace(),
+        );
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Confirm").color(Color32::WHITE))
+                        .fill(t.accent),
+                )
+                .clicked()
+            {
+                approved = Some(true);
+            }
+            if ui
+                .add(egui::Button::new(RichText::new("Reject").color(t.text)).fill(t.fill))
+                .clicked()
+            {
+                approved = Some(false);
+            }
         });
+    });
     if let Some(approved) = approved {
         out.push(BridgeCommand::ConfirmMerge {
             workstream: proposal.workstream,

@@ -7,9 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BridgeCommand {
     /// Start a mission from a user objective. The Captain plans it.
-    StartMission {
-        objective: String,
-    },
+    StartMission { objective: String },
     /// Answer an escalation ticket.
     ResolveEscalation {
         id: EscalationId,
@@ -26,9 +24,7 @@ pub enum BridgeCommand {
     WindDown,
     /// Let a workstream that stayed breached past max Kobayashi rounds
     /// enter the merge queue anyway. Explicit user override only.
-    OverrideFlagged {
-        workstream: WorkstreamId,
-    },
+    OverrideFlagged { workstream: WorkstreamId },
     /// Graceful shutdown: terminate children, persist state, clean up.
     Shutdown,
     /// Re-emit all currently-actionable one-shot signals (open escalations

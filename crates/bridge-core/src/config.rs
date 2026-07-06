@@ -301,8 +301,7 @@ mod tests {
     fn ui_editor_command_defaults_to_code() {
         let cfg = BridgeConfig::default();
         assert_eq!(cfg.ui.editor_command, "code");
-        let parsed: BridgeConfig =
-            toml::from_str("[ui]\neditor_command = \"cursor\"\n").unwrap();
+        let parsed: BridgeConfig = toml::from_str("[ui]\neditor_command = \"cursor\"\n").unwrap();
         assert_eq!(parsed.ui.editor_command, "cursor");
     }
 }

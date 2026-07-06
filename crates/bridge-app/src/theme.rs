@@ -128,8 +128,14 @@ mod tests {
 
     #[test]
     fn tokens_differ_by_mode() {
-        assert_eq!(tokens(ThemeMode::Light).accent, Color32::from_rgb(0x00, 0x71, 0xE3));
-        assert_eq!(tokens(ThemeMode::Dark).accent, Color32::from_rgb(0x0A, 0x84, 0xFF));
+        assert_eq!(
+            tokens(ThemeMode::Light).accent,
+            Color32::from_rgb(0x00, 0x71, 0xE3)
+        );
+        assert_eq!(
+            tokens(ThemeMode::Dark).accent,
+            Color32::from_rgb(0x0A, 0x84, 0xFF)
+        );
         assert_ne!(tokens(ThemeMode::Light).bg, tokens(ThemeMode::Dark).bg);
     }
 

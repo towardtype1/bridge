@@ -211,10 +211,7 @@ impl eframe::App for BridgeApp {
 
 use ui::egui;
 
-fn run_gui(
-    wiring: Wiring,
-    editor_command: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn run_gui(wiring: Wiring, editor_command: String) -> Result<(), Box<dyn std::error::Error>> {
     let events = wiring.events.clone();
     let runtime_handle = wiring.runtime.handle().clone();
     eframe::run_native(

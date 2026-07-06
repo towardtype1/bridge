@@ -36,7 +36,7 @@ Mission objective
 | `bridge-compat` | The only crate that touches version-fragile CLI surfaces (flags, stream-json, hook schemas, settings) |
 | `bridge-engine` | Claude process runner: two-tier semaphore, timeouts, session registry, budgets, rate-limit detection, preflight |
 | `bridge-git` | Worktree lifecycle, rebase and local merge primitives (shells out to real `git`) |
-| `bridge-tactical` | Policy engine (prime directives, config rules, Red Alert), escalation broker, axum control server, order screening |
+| `bridge-tactical` | Policy engine (prime directives, config rules), escalation broker, axum control server, order screening |
 | `bridge-hook-helper` | Fail-closed hook forwarder binary installed into every worktree |
 | `bridge-computer` | Ship's Computer: SQLite persistence (missions, turns, hook decisions, battle reports, sessions, usage, findings memory) |
 | `bridge-stations` | Station profiles and prompts, Captain orchestration, mission state machine, merge queue, Kobayashi Maru |
@@ -63,7 +63,7 @@ cd /path/to/your/repo
 
 (Put the release binary on your `PATH` and it is just `bridge`.) To target a different repository without `cd`-ing into it, pass `--repo <path>`. Configuration is optional - drop a `bridge.toml` in the target repo (`cp bridge.example.toml bridge.toml`) to override models, budgets, or policy; otherwise built-in defaults apply.
 
-Type a mission objective in the GUI. The Captain plans it, workstreams run concurrently, escalations and merge confirmations appear as prompts you answer in the GUI. **Red Alert** (a header toggle) escalates every tool call to you.
+Type a mission objective in the GUI. The Captain plans it, workstreams run concurrently, escalations and merge confirmations appear as prompts you answer in the GUI.
 
 ### Headless mode
 
@@ -79,10 +79,11 @@ All keys are optional; see [bridge.example.toml](bridge.example.toml) for the an
 
 - `[claude]` - `model`, `kobayashi_model`, `max_concurrent` (semaphore, default 3), `kobayashi_reserved_slots`, `turn_timeout_secs`, tested version range.
 - `[budgets]` - `max_total_turns`, `max_turns_per_workstream`, `max_kobayashi_rounds`, optional `max_wall_clock_secs`. Exhaustion pauses the mission; you extend or wind down from the GUI.
-- `[tactical]` - destructive command patterns, protected path patterns, network egress policy, optional deep scan, Red Alert default, escalation timeout. Prime directives are hardcoded and cannot be disabled here.
+- `[tactical]` - destructive command patterns, protected path patterns, network egress policy, optional deep scan, escalation timeout. Prime directives are hardcoded and cannot be disabled here.
 - `[merge]` - `rebase` (default) or `merge-commit`.
 - `[worktrees]` - override the root, keep-on-failure.
 - `[linear]` - optional MCP sync; reads auto-allowed, writes escalate unless they match expected sync events, deletes always escalate.
+- `[ui]` - `editor_command` - the command the Open in VS Code button runs (default `code`).
 
 ## Compatibility policy
 
