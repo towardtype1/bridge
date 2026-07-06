@@ -47,6 +47,13 @@ pub struct UiInputs {
     /// Guardrails inspector: when true, also show routine Allow decisions;
     /// otherwise only denials and escalations (exceptions-only).
     pub show_all_guardrails: bool,
+    /// Deck's tactical console clicked: shows the Tactical interim window.
+    pub open_tactical: bool,
+    /// Deck's Kobayashi Maru door clicked: shows the Kobayashi interim window.
+    pub open_kobayashi: bool,
+    /// Deck's computer console clicked: shows the Ship's Computer interim
+    /// window (Ship's Log content).
+    pub open_computer: bool,
 }
 
 pub const MAX_FEED: usize = 2_000;

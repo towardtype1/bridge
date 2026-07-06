@@ -2,9 +2,6 @@
 //! sprites and palettes, a software-rendered framebuffer blitted through
 //! one NEAREST egui texture, and native-coordinate hit-testing.
 
-#![allow(dead_code)]
-// Staged build: the deck is consumed by render/ui integration (Tasks 6-7); remove this allow then.
-
 pub mod input;
 pub mod render;
 pub mod scene;

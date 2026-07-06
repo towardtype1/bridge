@@ -167,6 +167,10 @@ pub fn scene_palette(p: DeckPalette) -> &'static ScenePalette {
 pub enum CrewStation {
     Command,
     Helm,
+    // Reserved for when the scene assigns an agent to the tactical console
+    // specifically (today every walking agent renders as `Helm`); the color
+    // match arm below already handles it identically to `Helm`.
+    #[allow(dead_code)]
     Tactical,
 }
 

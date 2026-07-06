@@ -36,7 +36,13 @@ use chrono::Utc;
 use egui::{Align, Align2, Color32, Layout, RichText};
 
 /// Draw one frame; queued commands are drained by the caller.
-pub fn draw(ctx: &egui::Context, state: &mut AppState, out_commands: &mut Vec<BridgeCommand>) {
+pub fn draw(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    deck: &mut crate::deck::render::DeckCanvas,
+    ui_cfg: &bridge_core::UiConfig,
+    out_commands: &mut Vec<BridgeCommand>,
+) {
     let mode = match ctx.theme() {
         egui::Theme::Dark => ThemeMode::Dark,
         egui::Theme::Light => ThemeMode::Light,
@@ -50,19 +56,26 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, out_commands: &mut Vec<Br
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    draw_in(&mut root, &t, state, out_commands);
+    draw_in(&mut root, &t, state, deck, ui_cfg, out_commands);
 }
 
 /// Draw one frame into a root `Ui`. Panel order is top, bottom, left, right,
 /// central, then the centered modals.
-fn draw_in(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState, out: &mut Vec<BridgeCommand>) {
+fn draw_in(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    state: &mut AppState,
+    deck: &mut crate::deck::render::DeckCanvas,
+    ui_cfg: &bridge_core::UiConfig,
+    out: &mut Vec<BridgeCommand>,
+) {
     let ctx = ui.ctx().clone();
     paused_banner(ui, t, state, out);
     compat_banner(ui, t, state);
     bottom_composer(ui, t, state, out);
     left_sidebar(ui, t, state, out);
     right_inspector(ui, t, state);
-    center(ui, t, state, out);
+    center(ui, t, state, deck, ui_cfg, out);
     escalation_modal(&ctx, t, state, out);
     merge_modal(&ctx, t, state, out);
 
@@ -75,6 +88,19 @@ fn draw_in(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState, out: &mut Vec<Br
 
 fn mission_is_live(state: &AppState) -> bool {
     matches!(state.mission_state, Some(MissionState::Executing))
+}
+
+/// Translate a deck click into a state change. Pure and unit-tested; the
+/// deck's own hit-testing decides which action (if any) a click produces.
+pub fn apply_deck_action(state: &mut AppState, action: crate::deck::DeckAction) {
+    use crate::deck::DeckAction as A;
+    match action {
+        A::SelectWorkstream(id) => state.ui.selected = Some(id),
+        A::HailCaptain => state.ui.selected = None,
+        A::OpenTactical => state.ui.open_tactical = true,
+        A::OpenKobayashi => state.ui.open_kobayashi = true,
+        A::OpenComputer => state.ui.open_computer = true,
+    }
 }
 
 // -- helper widgets -----------------------------------------------------------
@@ -626,116 +652,253 @@ fn guardrail_row(ui: &mut egui::Ui, t: &Tokens, record: &bridge_core::HookDecisi
 
 // -- content ------------------------------------------------------------------
 
-fn center(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeCommand>) {
-    let frame = egui::Frame::new()
-        .fill(t.bg)
-        .inner_margin(egui::Margin::symmetric(30, 26));
+/// The deck fills the center panel; the selected workstream, tactical,
+/// Kobayashi, and computer consoles each open a stock `egui::Window` on
+/// top of it. These four windows are interim: faithful to the previous
+/// flat layout, not yet restyled for the deck (a later task covers that).
+fn center(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    state: &mut AppState,
+    deck: &mut crate::deck::render::DeckCanvas,
+    ui_cfg: &bridge_core::UiConfig,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let frame = egui::Frame::new().fill(egui::Color32::from_rgb(0x06, 0x08, 0x11));
     egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-        let Some(selected) = state.ui.selected else {
-            ships_log(ui, t, state);
-            return;
-        };
-        let Some(panel) = state.workstreams.get(&selected) else {
-            ships_log(ui, t, state);
-            return;
-        };
+        if let Some(action) = crate::deck::render::draw_deck(
+            deck,
+            ui,
+            state,
+            ui_cfg.deck_palette,
+            ui_cfg.reduce_motion,
+        ) {
+            apply_deck_action(state, action);
+        }
+    });
+    let ctx = ui.ctx().clone();
+    workstream_window(&ctx, t, state, out);
+    tactical_window(&ctx, t, state);
+    kobayashi_window(&ctx, t, state);
+    computer_window(&ctx, t, state);
+}
 
-        // Owned copies so the interactive closures below don't borrow `state`.
-        let status = panel.status.clone();
-        let worktree_path = panel.worktree_path.clone();
-        let editor_command = state.ui.editor_command.clone();
-
-        // Title row: name + status pill + right-aligned actions.
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(short_id(&selected))
-                    .color(t.text)
-                    .size(26.0)
-                    .strong(),
-            );
-            ui.add_space(10.0);
-            if let Some(status) = &status {
-                pill(ui, t, &status_label(status), status_color(status, t));
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let open =
-                    egui::Button::new(RichText::new("Open in VS Code").color(t.text).size(12.5))
-                        .fill(t.fill);
-                if ui.add_enabled(worktree_path.is_some(), open).clicked()
-                    && let Some(path) = &worktree_path
-                {
-                    spawn_editor(&editor_command, path);
-                }
-                if matches!(status, Some(WorkstreamStatus::Flagged)) {
-                    ui.add_space(8.0);
-                    let override_btn =
-                        egui::Button::new(RichText::new("Override").color(t.crit).size(12.5))
-                            .fill(theme::tint(t.crit, t.bg, 0.14));
-                    if ui.add(override_btn).clicked() {
-                        out.push(BridgeCommand::OverrideFlagged {
-                            workstream: selected,
-                        });
-                    }
-                }
-            });
+/// Selecting a console on the deck opens this window; closing it (the
+/// title-bar X) clears the selection so the deck stops highlighting it.
+fn workstream_window(
+    ctx: &egui::Context,
+    t: &Tokens,
+    state: &mut AppState,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let Some(selected) = state.ui.selected else {
+        return;
+    };
+    let mut open = true;
+    egui::Window::new("Workstream")
+        .open(&mut open)
+        .default_size(egui::vec2(560.0, 520.0))
+        .show(ctx, |ui| {
+            workstream_body(ui, t, state, selected, out);
         });
+    if !open {
+        state.ui.selected = None;
+    }
+}
 
-        // Subtitle: station and branch, mono; short id when neither is known.
-        let station = panel.turns.last().map(|turn| turn.station.to_string());
-        let branch = state
-            .merge_queue
-            .iter()
-            .find(|e| e.workstream == selected)
-            .map(|e| e.branch.clone())
-            .or_else(|| {
-                state
-                    .pending_merges
-                    .iter()
-                    .find(|p| p.workstream == selected)
-                    .map(|p| p.branch.clone())
-            });
-        let subtitle = match (station, branch) {
-            (Some(s), Some(b)) => format!("{s} · {b}"),
-            (Some(s), None) => s,
-            (None, Some(b)) => b,
-            (None, None) => short_id(&selected),
-        };
-        ui.add_space(2.0);
+/// The workstream detail body: title row, status pill, "Open in VS Code"
+/// (+ Override while Flagged), station/branch subtitle, battle-report card,
+/// turn history, and the activity feed. Unchanged from the pre-deck center
+/// panel, just re-hosted inside a `Window` instead of the `CentralPanel`.
+fn workstream_body(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    state: &AppState,
+    selected: WorkstreamId,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let Some(panel) = state.workstreams.get(&selected) else {
         ui.label(
-            RichText::new(subtitle)
+            RichText::new("Workstream not found")
                 .color(t.text_3)
-                .size(12.0)
-                .monospace(),
+                .size(12.5),
         );
-        ui.add_space(16.0);
+        return;
+    };
 
-        battle_report_card(ui, t, state, selected);
-        turn_history(ui, t, panel);
+    // Owned copies so the interactive closures below don't borrow `state`.
+    let status = panel.status.clone();
+    let worktree_path = panel.worktree_path.clone();
+    let editor_command = state.ui.editor_command.clone();
 
-        ui.add_space(16.0);
-        section_label(ui, t, "Activity");
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for line in &panel.tool_calls {
-                    ui.label(RichText::new(line).color(t.info).size(12.0).monospace());
-                }
-                for (station, text) in &panel.output {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new(station.to_string())
-                                .color(t.text_2)
-                                .size(12.5)
-                                .monospace(),
-                        );
-                        ui.add_space(4.0);
-                        ui.label(RichText::new(text).color(t.text).size(13.5));
+    // Title row: name + status pill + right-aligned actions.
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(short_id(&selected))
+                .color(t.text)
+                .size(26.0)
+                .strong(),
+        );
+        ui.add_space(10.0);
+        if let Some(status) = &status {
+            pill(ui, t, &status_label(status), status_color(status, t));
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let open = egui::Button::new(RichText::new("Open in VS Code").color(t.text).size(12.5))
+                .fill(t.fill);
+            if ui.add_enabled(worktree_path.is_some(), open).clicked()
+                && let Some(path) = &worktree_path
+            {
+                spawn_editor(&editor_command, path);
+            }
+            if matches!(status, Some(WorkstreamStatus::Flagged)) {
+                ui.add_space(8.0);
+                let override_btn =
+                    egui::Button::new(RichText::new("Override").color(t.crit).size(12.5))
+                        .fill(theme::tint(t.crit, t.bg, 0.14));
+                if ui.add(override_btn).clicked() {
+                    out.push(BridgeCommand::OverrideFlagged {
+                        workstream: selected,
                     });
                 }
-            });
+            }
+        });
     });
+
+    // Subtitle: station and branch, mono; short id when neither is known.
+    let station = panel.turns.last().map(|turn| turn.station.to_string());
+    let branch = state
+        .merge_queue
+        .iter()
+        .find(|e| e.workstream == selected)
+        .map(|e| e.branch.clone())
+        .or_else(|| {
+            state
+                .pending_merges
+                .iter()
+                .find(|p| p.workstream == selected)
+                .map(|p| p.branch.clone())
+        });
+    let subtitle = match (station, branch) {
+        (Some(s), Some(b)) => format!("{s} · {b}"),
+        (Some(s), None) => s,
+        (None, Some(b)) => b,
+        (None, None) => short_id(&selected),
+    };
+    ui.add_space(2.0);
+    ui.label(
+        RichText::new(subtitle)
+            .color(t.text_3)
+            .size(12.0)
+            .monospace(),
+    );
+    ui.add_space(16.0);
+
+    battle_report_card(ui, t, state, selected);
+    turn_history(ui, t, panel);
+
+    ui.add_space(16.0);
+    section_label(ui, t, "Activity");
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical()
+        .stick_to_bottom(true)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for line in &panel.tool_calls {
+                ui.label(RichText::new(line).color(t.info).size(12.0).monospace());
+            }
+            for (station, text) in &panel.output {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(station.to_string())
+                            .color(t.text_2)
+                            .size(12.5)
+                            .monospace(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(text).color(t.text).size(13.5));
+                });
+            }
+        });
+}
+
+/// The tactical console: reuses the inspector's Guardrails group content so
+/// the exceptions-only feed reads identically in both places.
+fn tactical_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
+    let mut open = state.ui.open_tactical;
+    if !open {
+        return;
+    }
+    egui::Window::new("Tactical")
+        .open(&mut open)
+        .show(ctx, |ui| {
+            guardrails_group(ui, t, state);
+        });
+    state.ui.open_tactical = open;
+}
+
+/// The Kobayashi Maru console: a plain summary list (workstream, verdict,
+/// finding count) per battle report, newest last.
+fn kobayashi_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
+    let mut open = state.ui.open_kobayashi;
+    if !open {
+        return;
+    }
+    egui::Window::new("Kobayashi Maru")
+        .open(&mut open)
+        .show(ctx, |ui| {
+            kobayashi_summary(ui, t, state);
+        });
+    state.ui.open_kobayashi = open;
+}
+
+fn kobayashi_summary(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
+    if state.battle_reports.is_empty() {
+        ui.label(
+            RichText::new("No battle reports yet")
+                .color(t.text_3)
+                .size(12.0),
+        );
+        return;
+    }
+    for report in &state.battle_reports {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(short_id(&report.workstream))
+                    .color(t.text)
+                    .size(12.5)
+                    .monospace(),
+            );
+            ui.add_space(8.0);
+            let (verdict_text, verdict_color) = match report.verdict {
+                Verdict::Clean => ("Clean", t.good),
+                Verdict::Breached => ("Breached", t.crit),
+            };
+            pill(ui, t, verdict_text, verdict_color);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("{} finding(s)", report.findings.len()))
+                        .color(t.text_3)
+                        .size(12.0),
+                );
+            });
+        });
+        ui.add_space(6.0);
+    }
+}
+
+/// The computer console: the Ship's Log, unchanged.
+fn computer_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
+    let mut open = state.ui.open_computer;
+    if !open {
+        return;
+    }
+    egui::Window::new("Ship's Computer")
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ships_log(ui, t, state);
+        });
+    state.ui.open_computer = open;
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
@@ -1046,3 +1209,25 @@ fn merge_modal(
 
 // Re-export egui through eframe for the single import point.
 pub use eframe::egui;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deck_actions_route() {
+        let mut state = AppState::default();
+        let ws = bridge_core::WorkstreamId::new();
+        apply_deck_action(&mut state, crate::deck::DeckAction::SelectWorkstream(ws));
+        assert_eq!(state.ui.selected, Some(ws));
+        apply_deck_action(&mut state, crate::deck::DeckAction::OpenTactical);
+        assert!(state.ui.open_tactical);
+        apply_deck_action(&mut state, crate::deck::DeckAction::OpenKobayashi);
+        assert!(state.ui.open_kobayashi);
+        apply_deck_action(&mut state, crate::deck::DeckAction::OpenComputer);
+        assert!(state.ui.open_computer);
+        // HailCaptain clears workstream selection (captain has no panel yet; A adds it).
+        apply_deck_action(&mut state, crate::deck::DeckAction::HailCaptain);
+        assert_eq!(state.ui.selected, None);
+    }
+}

@@ -30,7 +30,8 @@ mod ui;
 mod wiring;
 
 use bridge_core::{
-    BridgeCommand, BridgeConfig, BridgeEvent, MissionState, UserDecision, WorkstreamStatus,
+    BridgeCommand, BridgeConfig, BridgeEvent, MissionState, UiConfig, UserDecision,
+    WorkstreamStatus,
 };
 use state::{AppState, UiInputs};
 use std::path::PathBuf;
@@ -61,15 +62,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => std::env::current_dir()?,
     };
     let config = load_config(&repo, args.config.as_deref())?;
-    // Grab the editor command before `config` is moved into the wiring; the
-    // GUI stores it in `AppState.ui` and spawns it directly for Open-in-editor.
-    let editor_command = config.ui.editor_command.clone();
+    // Grab the UI config before `config` is moved into the wiring; the GUI
+    // stores it whole (deck palette, reduce-motion, editor command) and
+    // threads it through `ui::draw` each frame.
+    let ui_cfg = config.ui.clone();
 
     let wiring = wiring::build(repo, config)?;
     if args.headless_smoke {
         run_headless(wiring, args.objective)
     } else {
-        run_gui(wiring, editor_command)
+        run_gui(wiring, ui_cfg)
     }
 }
 
@@ -132,6 +134,8 @@ fn load_config(
 
 struct BridgeApp {
     state: AppState,
+    deck: deck::render::DeckCanvas,
+    ui_cfg: UiConfig,
     events_rx: broadcast::Receiver<BridgeEvent>,
     commands: mpsc::Sender<BridgeCommand>,
     out_commands: Vec<BridgeCommand>,
@@ -141,7 +145,7 @@ struct BridgeApp {
 }
 
 impl BridgeApp {
-    fn new(mut wiring: Wiring, editor_command: String) -> Self {
+    fn new(mut wiring: Wiring, ui_cfg: UiConfig) -> Self {
         let events_rx = wiring
             .bootstrap_rx
             .take()
@@ -149,13 +153,15 @@ impl BridgeApp {
         let commands = wiring.commands.clone();
         let state = AppState {
             ui: UiInputs {
-                editor_command,
+                editor_command: ui_cfg.editor_command.clone(),
                 ..UiInputs::default()
             },
             ..AppState::default()
         };
         Self {
             state,
+            deck: deck::render::DeckCanvas::default(),
+            ui_cfg,
             events_rx,
             commands,
             out_commands: Vec::new(),
@@ -208,7 +214,13 @@ impl eframe::App for BridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
         let ctx = ui.ctx().clone();
-        ui::draw(&ctx, &mut self.state, &mut self.out_commands);
+        ui::draw(
+            &ctx,
+            &mut self.state,
+            &mut self.deck,
+            &self.ui_cfg,
+            &mut self.out_commands,
+        );
         self.flush_commands();
         let close_requested = ctx.input(|i| i.viewport().close_requested());
         if close_requested && !self.shutdown_sent {
@@ -222,7 +234,7 @@ impl eframe::App for BridgeApp {
 
 use ui::egui;
 
-fn run_gui(wiring: Wiring, editor_command: String) -> Result<(), Box<dyn std::error::Error>> {
+fn run_gui(wiring: Wiring, ui_cfg: UiConfig) -> Result<(), Box<dyn std::error::Error>> {
     let events = wiring.events.clone();
     let runtime_handle = wiring.runtime.handle().clone();
     eframe::run_native(
@@ -230,7 +242,7 @@ fn run_gui(wiring: Wiring, editor_command: String) -> Result<(), Box<dyn std::er
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
             wiring::spawn_repaint_forwarder(&runtime_handle, &events, Some(cc.egui_ctx.clone()));
-            Ok(Box::new(BridgeApp::new(wiring, editor_command)))
+            Ok(Box::new(BridgeApp::new(wiring, ui_cfg)))
         }),
     )?;
     Ok(())
