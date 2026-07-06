@@ -45,8 +45,13 @@ fn install_settings(
     let dir = worktree.join(".claude");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("settings.json");
-    let value =
-        bridge_compat::render_worktree_settings(server_url, ws, token, helper_path, hook_timeout_secs);
+    let value = bridge_compat::render_worktree_settings(
+        server_url,
+        ws,
+        token,
+        helper_path,
+        hook_timeout_secs,
+    );
     let body = serde_json::to_vec_pretty(&value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut opts = std::fs::OpenOptions::new();
@@ -113,7 +118,15 @@ pub fn provision<G: GitPort, T: TacticalPort>(
     write_only_under: Option<PathBuf>,
 ) -> Result<ProvisionedWorktree, EngineeringError> {
     let handle = git.create_worktree(mission_slug, ws_slug, base_ref)?;
-    provision_handle(git, tactical, claude_cfg, helper_path, ws, handle, write_only_under)
+    provision_handle(
+        git,
+        tactical,
+        claude_cfg,
+        helper_path,
+        ws,
+        handle,
+        write_only_under,
+    )
 }
 
 /// Same, but a throwaway worktree at `branch`'s head for one Kobayashi
@@ -184,7 +197,9 @@ pub fn locate_helper() -> Result<PathBuf, EngineeringError> {
     }
     for candidate in &candidates {
         if candidate.is_file() {
-            return Ok(candidate.canonicalize().unwrap_or_else(|_| candidate.clone()));
+            return Ok(candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone()));
         }
     }
     Err(EngineeringError::Install(std::io::Error::new(
@@ -209,7 +224,15 @@ mod tests {
         let ws = WorkstreamId::new();
 
         let p = provision(
-            &*deps, &*deps, &cfg, &helper(), "mission-x", ws, "ws-a", "main", None,
+            &*deps,
+            &*deps,
+            &cfg,
+            &helper(),
+            "mission-x",
+            ws,
+            "ws-a",
+            "main",
+            None,
         )
         .expect("provision");
 
@@ -219,7 +242,10 @@ mod tests {
             ws: "ws-a".into(),
             base: "main".into(),
         }));
-        assert_eq!(p.handle.path, deps.root.path().join("mission-x").join("ws-a"));
+        assert_eq!(
+            p.handle.path,
+            deps.root.path().join("mission-x").join("ws-a")
+        );
 
         // Settings file written at <worktree>/.claude/settings.json ...
         let expected_path = p.handle.path.join(".claude").join("settings.json");
@@ -230,7 +256,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&expected_path).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&expected_path)
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600, "settings must be 0600");
         }
 
@@ -250,7 +279,10 @@ mod tests {
         );
         let actual: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(actual, expected);
-        assert!(raw.contains(token), "token must be embedded in the settings");
+        assert!(
+            raw.contains(token),
+            "token must be embedded in the settings"
+        );
 
         // .claude/ excluded from git status via the worktree exclude file.
         assert!(deps.git_log().iter().any(|c| matches!(
@@ -268,16 +300,23 @@ mod tests {
         let p = provision_throwaway(&*deps, &*deps, &cfg, &helper(), ws, "bridge/m/ws-a")
             .expect("provision throwaway");
 
-        assert!(deps
-            .git_log()
-            .contains(&GitCall::CreateThrowaway { branch: "bridge/m/ws-a".into() }));
-        assert!(p.handle.path.starts_with(deps.root.path().join("throwaway")));
+        assert!(deps.git_log().contains(&GitCall::CreateThrowaway {
+            branch: "bridge/m/ws-a".into()
+        }));
+        assert!(
+            p.handle
+                .path
+                .starts_with(deps.root.path().join("throwaway"))
+        );
         assert!(p.settings_path.is_file());
 
         let armed = deps.armed.lock().unwrap();
         let (_, ctx, _) = &armed[0];
         assert_eq!(ctx.worktree_path, p.handle.path);
-        assert_eq!(ctx.write_only_under, Some(PathBuf::from("tests/adversarial")));
+        assert_eq!(
+            ctx.write_only_under,
+            Some(PathBuf::from("tests/adversarial"))
+        );
     }
 
     #[test]
@@ -288,7 +327,10 @@ mod tests {
         provision_throwaway(&*deps, &*deps, &cfg, &helper(), ws, "b").unwrap();
         provision_throwaway(&*deps, &*deps, &cfg, &helper(), ws, "b").unwrap();
         let armed = deps.armed.lock().unwrap();
-        assert_ne!(armed[0].2, armed[1].2, "throwaway rounds must get fresh tokens");
+        assert_ne!(
+            armed[0].2, armed[1].2,
+            "throwaway rounds must get fresh tokens"
+        );
     }
 
     #[test]
@@ -297,7 +339,15 @@ mod tests {
         let cfg = ClaudeConfig::default();
         let ws = WorkstreamId::new();
         let p = provision(
-            &*deps, &*deps, &cfg, &helper(), "mission-x", ws, "ws-a", "main", None,
+            &*deps,
+            &*deps,
+            &cfg,
+            &helper(),
+            "mission-x",
+            ws,
+            "ws-a",
+            "main",
+            None,
         )
         .unwrap();
         assert!(p.settings_path.is_file());
@@ -318,7 +368,15 @@ mod tests {
         let cfg = ClaudeConfig::default();
         let ws = WorkstreamId::new();
         let p = provision(
-            &*deps, &*deps, &cfg, &helper(), "mission-x", ws, "ws-a", "main", None,
+            &*deps,
+            &*deps,
+            &cfg,
+            &helper(),
+            "mission-x",
+            ws,
+            "ws-a",
+            "main",
+            None,
         )
         .unwrap();
         // Delete the settings file up front and make worktree removal fail:

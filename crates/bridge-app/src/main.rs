@@ -218,8 +218,7 @@ fn run_headless(
     mut wiring: Wiring,
     objective: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let objective =
-        objective.ok_or("--headless-smoke requires a mission objective argument")?;
+    let objective = objective.ok_or("--headless-smoke requires a mission objective argument")?;
     let mut events_rx = wiring
         .bootstrap_rx
         .take()
@@ -234,8 +233,13 @@ fn run_headless(
         let event = match events_rx.blocking_recv() {
             Ok(event) => event,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(skipped, "headless driver lagged the event bus; requesting resync");
-                wiring.commands.blocking_send(BridgeCommand::ResyncActionable)?;
+                tracing::warn!(
+                    skipped,
+                    "headless driver lagged the event bus; requesting resync"
+                );
+                wiring
+                    .commands
+                    .blocking_send(BridgeCommand::ResyncActionable)?;
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => {
@@ -247,10 +251,12 @@ fn run_headless(
 
         match &event {
             BridgeEvent::EscalationRequested(ticket) => {
-                wiring.commands.blocking_send(BridgeCommand::ResolveEscalation {
-                    id: ticket.id,
-                    decision: UserDecision::Approve,
-                })?;
+                wiring
+                    .commands
+                    .blocking_send(BridgeCommand::ResolveEscalation {
+                        id: ticket.id,
+                        decision: UserDecision::Approve,
+                    })?;
             }
             BridgeEvent::MergeConfirmationRequested(proposal) => {
                 wiring.commands.blocking_send(BridgeCommand::ConfirmMerge {
@@ -356,8 +362,11 @@ mod tests {
     #[test]
     fn load_config_picks_up_repo_bridge_toml() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("bridge.toml"), "[budgets]\nmax_total_turns = 9\n")
-            .unwrap();
+        std::fs::write(
+            dir.path().join("bridge.toml"),
+            "[budgets]\nmax_total_turns = 9\n",
+        )
+        .unwrap();
         let cfg = load_config(dir.path(), None).unwrap();
         assert_eq!(cfg.budgets.max_total_turns, 9);
     }

@@ -6,14 +6,14 @@
 
 use crate::ports::{ComputerPort, GitPort, TacticalPort, TurnPort};
 use bridge_compat::ClaudeInvocation;
+use bridge_computer::ComputerError;
 use bridge_core::{
     BattleReport, BridgeConfig, EscalationId, Finding, HookDecisionRecord, MergeMode, MissionId,
     MissionPlan, Order, SessionId, Station, TurnRecord, UserDecision, WorkstreamId,
     WorkstreamStatus,
 };
-use bridge_computer::ComputerError;
-use bridge_engine::{EngineError, RateLimitHit, TurnCtx, TurnOutcome};
 use bridge_engine::runner::ExitClass;
+use bridge_engine::{EngineError, RateLimitHit, TurnCtx, TurnOutcome};
 use bridge_git::{GitError, MergeOutcome, RebaseOutcome, WorktreeHandle};
 use bridge_tactical::{ScreenResult, WorkstreamCtx};
 use std::collections::{HashMap, VecDeque};
@@ -74,15 +74,41 @@ pub struct RecordedTurn {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GitCall {
-    CreateWorktree { mission: String, ws: String, base: String },
-    CreateThrowaway { branch: String },
-    RemoveWorktree { path: PathBuf, force: bool },
-    Rebase { branch: String, target: String },
-    Merge { branch: String },
-    CommitsAhead { branch: String, base: String },
-    WorktreeHead { path: PathBuf },
-    CherryPick { path: PathBuf, branch: String, commits: Vec<String> },
-    Exclude { branch: String, patterns: Vec<String> },
+    CreateWorktree {
+        mission: String,
+        ws: String,
+        base: String,
+    },
+    CreateThrowaway {
+        branch: String,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+        force: bool,
+    },
+    Rebase {
+        branch: String,
+        target: String,
+    },
+    Merge {
+        branch: String,
+    },
+    CommitsAhead {
+        branch: String,
+        base: String,
+    },
+    WorktreeHead {
+        path: PathBuf,
+    },
+    CherryPick {
+        path: PathBuf,
+        branch: String,
+        commits: Vec<String>,
+    },
+    Exclude {
+        branch: String,
+        patterns: Vec<String>,
+    },
 }
 
 type ScreenFn = Box<dyn Fn(&Order) -> ScreenResult + Send + Sync>;
@@ -301,12 +327,20 @@ impl TurnPort for MockDeps {
 }
 
 impl GitPort for MockDeps {
-    fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError> {
-        self.git_calls.lock().unwrap().push(GitCall::CreateWorktree {
-            mission: mission.into(),
-            ws: ws.into(),
-            base: base.into(),
-        });
+    fn create_worktree(
+        &self,
+        mission: &str,
+        ws: &str,
+        base: &str,
+    ) -> Result<WorktreeHandle, GitError> {
+        self.git_calls
+            .lock()
+            .unwrap()
+            .push(GitCall::CreateWorktree {
+                mission: mission.into(),
+                ws: ws.into(),
+                base: base.into(),
+            });
         let path = self.root.path().join(mission).join(ws);
         std::fs::create_dir_all(&path).map_err(GitError::Spawn)?;
         Ok(WorktreeHandle {
@@ -320,7 +354,9 @@ impl GitPort for MockDeps {
         self.git_calls
             .lock()
             .unwrap()
-            .push(GitCall::CreateThrowaway { branch: branch.into() });
+            .push(GitCall::CreateThrowaway {
+                branch: branch.into(),
+            });
         let path = self.root.path().join("throwaway").join(n.to_string());
         std::fs::create_dir_all(&path).map_err(GitError::Spawn)?;
         // Mirror the REAL create_throwaway: a DETACHED worktree whose handle
@@ -333,20 +369,22 @@ impl GitPort for MockDeps {
     }
 
     fn worktree_head(&self, h: &WorktreeHandle) -> Result<String, GitError> {
-        self.git_calls
-            .lock()
-            .unwrap()
-            .push(GitCall::WorktreeHead { path: h.path.clone() });
+        self.git_calls.lock().unwrap().push(GitCall::WorktreeHead {
+            path: h.path.clone(),
+        });
         // A synthetic HEAD sha distinct from the source branch, so
         // commits_ahead(head, branch) is a non-degenerate range.
         Ok(format!("{}@throwaway-head", h.branch))
     }
 
     fn remove_worktree(&self, h: &WorktreeHandle, force: bool) -> Result<(), GitError> {
-        self.git_calls.lock().unwrap().push(GitCall::RemoveWorktree {
-            path: h.path.clone(),
-            force,
-        });
+        self.git_calls
+            .lock()
+            .unwrap()
+            .push(GitCall::RemoveWorktree {
+                path: h.path.clone(),
+                force,
+            });
         if *self.fail_remove_worktree.lock().unwrap() {
             return Err(GitError::Invalid("mock remove failure".into()));
         }
@@ -367,10 +405,9 @@ impl GitPort for MockDeps {
     }
 
     fn merge_into_main(&self, branch: &str, _mode: MergeMode) -> Result<MergeOutcome, GitError> {
-        self.git_calls
-            .lock()
-            .unwrap()
-            .push(GitCall::Merge { branch: branch.into() });
+        self.git_calls.lock().unwrap().push(GitCall::Merge {
+            branch: branch.into(),
+        });
         Ok(MergeOutcome {
             main_head: "new-main-head".into(),
         })
@@ -407,7 +444,11 @@ impl GitPort for MockDeps {
             .unwrap_or_default())
     }
 
-    fn cherry_pick(&self, h: &WorktreeHandle, commits: &[String]) -> Result<Result<(), String>, GitError> {
+    fn cherry_pick(
+        &self,
+        h: &WorktreeHandle,
+        commits: &[String],
+    ) -> Result<Result<(), String>, GitError> {
         self.git_calls.lock().unwrap().push(GitCall::CherryPick {
             path: h.path.clone(),
             branch: h.branch.clone(),
@@ -454,18 +495,32 @@ impl TacticalPort for MockDeps {
     }
 
     fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {
-        self.resolved_hook_escalations.lock().unwrap().push((id, decision));
+        self.resolved_hook_escalations
+            .lock()
+            .unwrap()
+            .push((id, decision));
     }
 }
 
 impl ComputerPort for MockDeps {
-    fn record_mission(&self, plan: &MissionPlan, _config: &BridgeConfig) -> Result<(), ComputerError> {
+    fn record_mission(
+        &self,
+        plan: &MissionPlan,
+        _config: &BridgeConfig,
+    ) -> Result<(), ComputerError> {
         self.recorded_missions.lock().unwrap().push(plan.clone());
         Ok(())
     }
 
-    fn record_workstream_status(&self, ws: WorkstreamId, status: &WorkstreamStatus) -> Result<(), ComputerError> {
-        self.recorded_statuses.lock().unwrap().push((ws, status.clone()));
+    fn record_workstream_status(
+        &self,
+        ws: WorkstreamId,
+        status: &WorkstreamStatus,
+    ) -> Result<(), ComputerError> {
+        self.recorded_statuses
+            .lock()
+            .unwrap()
+            .push((ws, status.clone()));
         Ok(())
     }
 
@@ -475,15 +530,28 @@ impl ComputerPort for MockDeps {
     }
 
     fn record_turn(&self, mission: MissionId, turn: &TurnRecord) -> Result<(), ComputerError> {
-        self.recorded_turns.lock().unwrap().push((mission, turn.clone()));
+        self.recorded_turns
+            .lock()
+            .unwrap()
+            .push((mission, turn.clone()));
         Ok(())
     }
 
-    fn record_hook_decision(&self, _mission: MissionId, _d: &HookDecisionRecord) -> Result<(), ComputerError> {
+    fn record_hook_decision(
+        &self,
+        _mission: MissionId,
+        _d: &HookDecisionRecord,
+    ) -> Result<(), ComputerError> {
         Ok(())
     }
 
-    fn record_session(&self, ws: WorkstreamId, station: Station, session: &SessionId, cwd: &Path) -> Result<(), ComputerError> {
+    fn record_session(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+        session: &SessionId,
+        cwd: &Path,
+    ) -> Result<(), ComputerError> {
         self.recorded_sessions
             .lock()
             .unwrap()
@@ -491,7 +559,11 @@ impl ComputerPort for MockDeps {
         Ok(())
     }
 
-    fn session_for(&self, ws: WorkstreamId, station: Station) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
+    fn session_for(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+    ) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
         Ok(self
             .recorded_sessions
             .lock()
@@ -502,7 +574,11 @@ impl ComputerPort for MockDeps {
             .map(|(_, _, sid, cwd)| (sid.clone(), cwd.clone())))
     }
 
-    fn record_battle_report(&self, report: &BattleReport, files: &[PathBuf]) -> Result<(), ComputerError> {
+    fn record_battle_report(
+        &self,
+        report: &BattleReport,
+        files: &[PathBuf],
+    ) -> Result<(), ComputerError> {
         self.recorded_reports
             .lock()
             .unwrap()

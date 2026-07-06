@@ -74,9 +74,8 @@ impl WorktreeManager {
     /// `worktrees_root` must NOT be inside it (validated here). Both paths
     /// are canonicalized; `worktrees_root` is created if missing.
     pub fn new(repo_root: PathBuf, worktrees_root: PathBuf) -> Result<Self, GitError> {
-        let repo_root = fs::canonicalize(&repo_root).map_err(|e| {
-            GitError::Invalid(format!("repo_root {}: {e}", repo_root.display()))
-        })?;
+        let repo_root = fs::canonicalize(&repo_root)
+            .map_err(|e| GitError::Invalid(format!("repo_root {}: {e}", repo_root.display())))?;
         // Resolve the actual repository toplevel; this also proves the path
         // is a git work dir.
         let out = checked_git(&repo_root, &["rev-parse", "--show-toplevel"])?;
@@ -103,7 +102,10 @@ impl WorktreeManager {
                 worktrees_root.display()
             ))
         })?;
-        Ok(Self { repo_root, worktrees_root })
+        Ok(Self {
+            repo_root,
+            worktrees_root,
+        })
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -127,7 +129,10 @@ impl WorktreeManager {
         validate_slug("workstream", ws_slug)?;
         let branch = format!("bridge/{mission_slug}/{ws_slug}");
         let branch_ref = format!("refs/heads/{branch}");
-        let verify = raw_git(&self.repo_root, &["show-ref", "--verify", "--quiet", &branch_ref])?;
+        let verify = raw_git(
+            &self.repo_root,
+            &["show-ref", "--verify", "--quiet", &branch_ref],
+        )?;
         if verify.status.success() {
             return Err(GitError::Invalid(format!("branch {branch} already exists")));
         }
@@ -159,7 +164,10 @@ impl WorktreeManager {
             &["worktree", "add", "--detach", path_str(&path)?, branch],
         )?;
         tracing::debug!(branch, path = %path.display(), "created throwaway worktree");
-        Ok(WorktreeHandle { path, branch: branch.to_string() })
+        Ok(WorktreeHandle {
+            path,
+            branch: branch.to_string(),
+        })
     }
 
     /// Resolve the HEAD commit of a specific worktree. Needed for detached
@@ -217,7 +225,12 @@ impl WorktreeManager {
             .map(PathBuf::from)
             .collect();
         checked_git(&handle.path, &["rebase", "--abort"])?;
-        tracing::warn!(branch = handle.branch, target, ?files, "rebase conflict, aborted");
+        tracing::warn!(
+            branch = handle.branch,
+            target,
+            ?files,
+            "rebase conflict, aborted"
+        );
         Ok(RebaseOutcome::Conflicts { files })
     }
 
@@ -274,7 +287,9 @@ impl WorktreeManager {
             }
         }
         let head = checked_git(&main_wt, &["rev-parse", "HEAD"])?;
-        Ok(MergeOutcome { main_head: stdout_str(&head) })
+        Ok(MergeOutcome {
+            main_head: stdout_str(&head),
+        })
     }
 
     /// Name of the repository's main branch ("main" or "master"), detected
@@ -292,8 +307,10 @@ impl WorktreeManager {
         }
         for candidate in ["main", "master"] {
             let branch_ref = format!("refs/heads/{candidate}");
-            let verify =
-                raw_git(&self.repo_root, &["show-ref", "--verify", "--quiet", &branch_ref])?;
+            let verify = raw_git(
+                &self.repo_root,
+                &["show-ref", "--verify", "--quiet", &branch_ref],
+            )?;
             if verify.status.success() {
                 return Ok(candidate.to_string());
             }
@@ -318,7 +335,11 @@ impl WorktreeManager {
     ) -> Result<(), GitError> {
         let out = checked_git(&handle.path, &["rev-parse", "--git-path", "info/exclude"])?;
         let reported = PathBuf::from(stdout_str(&out));
-        let exclude = if reported.is_relative() { handle.path.join(reported) } else { reported };
+        let exclude = if reported.is_relative() {
+            handle.path.join(reported)
+        } else {
+            reported
+        };
         if let Some(parent) = exclude.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 GitError::Invalid(format!("cannot create {}: {e}", parent.display()))
@@ -474,8 +495,11 @@ impl WorktreeManager {
         for state_dir in ["rebase-merge", "rebase-apply"] {
             let out = checked_git(&handle.path, &["rev-parse", "--git-path", state_dir])?;
             let reported = PathBuf::from(stdout_str(&out));
-            let path =
-                if reported.is_relative() { handle.path.join(reported) } else { reported };
+            let path = if reported.is_relative() {
+                handle.path.join(reported)
+            } else {
+                reported
+            };
             if path.exists() {
                 return Ok(true);
             }
@@ -495,7 +519,12 @@ impl WorktreeManager {
             } else if let Some(branch) = line.strip_prefix("branch ")
                 && let Some((_, slot)) = entries.last_mut()
             {
-                *slot = Some(branch.strip_prefix("refs/heads/").unwrap_or(branch).to_string());
+                *slot = Some(
+                    branch
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(branch)
+                        .to_string(),
+                );
             }
         }
         Ok(entries)
@@ -507,7 +536,9 @@ pub enum RebaseOutcome {
     Clean,
     /// Conflicts were detected; the rebase was aborted and the worktree is
     /// back at its pre-rebase state.
-    Conflicts { files: Vec<PathBuf> },
+    Conflicts {
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -564,7 +595,9 @@ fn validate_slug(kind: &str, slug: &str) -> Result<(), GitError> {
     let ok = !slug.is_empty()
         && !slug.starts_with('-')
         && !slug.starts_with('.')
-        && slug.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
     if ok {
         Ok(())
     } else {

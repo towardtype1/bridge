@@ -1509,7 +1509,10 @@ mod tests {
         }
         // Real escapes with quoted spaced paths still deny.
         assert_deny(
-            &eng.decide(ws, &bash(r#"touch "/Users/kirk/Library/Application Support/other/x""#)),
+            &eng.decide(
+                ws,
+                &bash(r#"touch "/Users/kirk/Library/Application Support/other/x""#),
+            ),
             "prime",
             "quoted write outside the worktree",
         );
@@ -1569,14 +1572,21 @@ mod tests {
             "prime.nested_shell",
             "find -exec",
         );
-        assert_escalate(&eng.decide(ws, &bash("ls | xargs rm")), "prime.nested_shell", "xargs");
+        assert_escalate(
+            &eng.decide(ws, &bash("ls | xargs rm")),
+            "prime.nested_shell",
+            "xargs",
+        );
     }
 
     #[test]
     fn legit_command_substitution_still_passes() {
         let (eng, ws) = engine(TacticalConfig::default());
         // A read-only substitution must not be denied or escalated.
-        for cmd in ["echo $(git rev-parse HEAD)", "test -f $(pwd)/Cargo.toml && echo ok"] {
+        for cmd in [
+            "echo $(git rev-parse HEAD)",
+            "test -f $(pwd)/Cargo.toml && echo ok",
+        ] {
             assert_pass(&eng.decide(ws, &bash(cmd)), false, cmd);
         }
     }

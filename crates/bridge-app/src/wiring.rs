@@ -1,8 +1,8 @@
 //! Composition root: builds the full engine stack and the channel pair
 //! the GUI talks to.
 
-use bridge_core::{BridgeCommand, BridgeConfig, BridgeEvent, LogEntry, LogLevel};
 use bridge_computer::ShipsComputer;
+use bridge_core::{BridgeCommand, BridgeConfig, BridgeEvent, LogEntry, LogLevel};
 use bridge_engine::ClaudeRunner;
 use bridge_git::WorktreeManager;
 use bridge_stations::{LiveDeps, MissionController};
@@ -227,10 +227,7 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_separators_and_trims_dashes() {
-        assert_eq!(
-            sanitize_repo_path(&PathBuf::from("/a/b/c")),
-            "a-b-c"
-        );
+        assert_eq!(sanitize_repo_path(&PathBuf::from("/a/b/c")), "a-b-c");
         assert_eq!(
             sanitize_repo_path(&PathBuf::from("relative/repo")),
             "relative-repo"

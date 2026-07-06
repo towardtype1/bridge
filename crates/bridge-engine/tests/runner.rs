@@ -56,7 +56,11 @@ async fn success_turn_populates_outcome_and_emits_events() {
         })
         .expect("a ToolCall event was observed on the bus");
     assert_eq!(tool_call.0, "Bash");
-    assert!(tool_call.1.contains("echo LCARS-OK"), "summary: {}", tool_call.1);
+    assert!(
+        tool_call.1.contains("echo LCARS-OK"),
+        "summary: {}",
+        tool_call.1
+    );
 
     // The malformed and unknown-type lines in the stream were skipped
     // without failing the turn; the malformed one produced a warn log.
@@ -122,7 +126,12 @@ async fn timeout_kills_the_child_process() {
         "kill took {:?}",
         started.elapsed()
     );
-    let pid = pids.lock().unwrap().first().copied().expect("pid registered");
+    let pid = pids
+        .lock()
+        .unwrap()
+        .first()
+        .copied()
+        .expect("pid registered");
     assert!(
         !process_alive(pid),
         "fake claude pid {pid} is still alive after timeout kill"
@@ -180,7 +189,10 @@ async fn kobayashi_takes_the_reserved_slot_while_generals_queue() {
     let (a, b, k) = tokio::join!(
         runner.run_turn(invocation(dir.path(), "general alpha"), turn_ctx(false)),
         runner.run_turn(invocation(dir.path(), "general beta"), turn_ctx(false)),
-        runner.run_turn(invocation(dir.path(), "KOBAYASHI adversarial probe"), turn_ctx(true)),
+        runner.run_turn(
+            invocation(dir.path(), "KOBAYASHI adversarial probe"),
+            turn_ctx(true)
+        ),
     );
     assert_eq!(a.unwrap().exit, ExitClass::Success);
     assert_eq!(b.unwrap().exit, ExitClass::Success);
@@ -267,7 +279,10 @@ async fn resume_session_id_is_passed_through_to_argv() {
         .iter()
         .position(|arg| arg == "--resume")
         .unwrap_or_else(|| panic!("--resume missing from argv: {:?}", dump.args));
-    assert_eq!(dump.args.get(resume_pos + 1).map(String::as_str), Some("resume-me-123"));
+    assert_eq!(
+        dump.args.get(resume_pos + 1).map(String::as_str),
+        Some("resume-me-123")
+    );
     // Sanity: the headless flags rendered by bridge-compat are present.
     assert_eq!(dump.args.first().map(String::as_str), Some("-p"));
     assert!(dump.args.iter().any(|arg| arg == "stream-json"));
@@ -307,7 +322,10 @@ async fn pid_register_is_called_with_true_then_false() {
     assert!(!calls[1].1, "second call clears the pid");
     assert_eq!(calls[0].0, calls[1].0, "same pid for register and clear");
     let dump = read_dump(&out);
-    assert_eq!(calls[0].0, dump.pid, "registered pid is the child's real pid");
+    assert_eq!(
+        calls[0].0, dump.pid,
+        "registered pid is the child's real pid"
+    );
 }
 
 #[tokio::test]

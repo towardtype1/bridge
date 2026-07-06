@@ -86,7 +86,11 @@ async fn unparseable_version_output_is_a_spawn_error() {
 async fn failing_version_command_is_a_spawn_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("broken_claude.sh");
-    std::fs::write(&path, "#!/bin/sh\necho \"dilithium exhausted\" >&2\nexit 7\n").unwrap();
+    std::fs::write(
+        &path,
+        "#!/bin/sh\necho \"dilithium exhausted\" >&2\nexit 7\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let err = preflight(&config_for(&path), false).await.unwrap_err();

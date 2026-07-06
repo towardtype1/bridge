@@ -31,7 +31,13 @@ fn spawn_rig(deps: Arc<MockDeps>, config: BridgeConfig, plan: Option<MissionPlan
         controller = controller.with_resumed_plan(plan);
     }
     let handle = tokio::spawn(controller.run());
-    Rig { deps, cmd: cmd_tx, rx: ev_rx, handle, collected: Vec::new() }
+    Rig {
+        deps,
+        cmd: cmd_tx,
+        rx: ev_rx,
+        handle,
+        collected: Vec::new(),
+    }
 }
 
 impl Rig {
@@ -39,11 +45,7 @@ impl Rig {
         self.cmd.send(cmd).await.expect("controller alive");
     }
 
-    async fn wait_for(
-        &mut self,
-        what: &str,
-        pred: impl Fn(&BridgeEvent) -> bool,
-    ) -> BridgeEvent {
+    async fn wait_for(&mut self, what: &str, pred: impl Fn(&BridgeEvent) -> bool) -> BridgeEvent {
         loop {
             let ev = tokio::time::timeout(WAIT, self.rx.recv())
                 .await
@@ -68,7 +70,10 @@ impl Rig {
     }
 
     async fn start(&mut self, objective: &str) {
-        self.send(BridgeCommand::StartMission { objective: objective.into() }).await;
+        self.send(BridgeCommand::StartMission {
+            objective: objective.into(),
+        })
+        .await;
         self.wait_for("mission Executing", |e| {
             matches!(
                 e,
@@ -151,7 +156,10 @@ async fn full_mission_two_parallel_workstreams() {
         .filter(|t| t.station == Station::Captain)
         .collect();
     assert_eq!(captain_turns.len(), 1);
-    assert_eq!(captain_turns[0].inv.json_schema, Some(PlanDraft::json_schema()));
+    assert_eq!(
+        captain_turns[0].inv.json_schema,
+        Some(PlanDraft::json_schema())
+    );
 
     // First (and so far only) merge proposal: the queue is serialized.
     rig.wait_for("first merge proposal", |e| {
@@ -181,22 +189,28 @@ async fn full_mission_two_parallel_workstreams() {
     }
 
     // MergeQueueUpdate events were observed.
-    assert!(rig
-        .collected
-        .iter()
-        .any(|e| matches!(e, BridgeEvent::MergeQueueUpdate(entries) if !entries.is_empty())));
+    assert!(
+        rig.collected
+            .iter()
+            .any(|e| matches!(e, BridgeEvent::MergeQueueUpdate(entries) if !entries.is_empty()))
+    );
 
     // Approve the head; the second proposal only arrives after the first
     // merge completes.
     let first = rig.proposals()[0];
-    rig.send(BridgeCommand::ConfirmMerge { workstream: first, approved: true }).await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: first,
+        approved: true,
+    })
+    .await;
     rig.wait_for("first workstream merged", |e| {
         matches!(e, BridgeEvent::WorkstreamStatus { id, status: WorkstreamStatus::Merged } if *id == first)
     })
     .await;
-    rig.wait_for("second merge proposal", |e| {
-        matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream != first)
-    })
+    rig.wait_for(
+        "second merge proposal",
+        |e| matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream != first),
+    )
     .await;
     let second = *rig.proposals().last().unwrap();
     assert_ne!(first, second);
@@ -205,7 +219,12 @@ async fn full_mission_two_parallel_workstreams() {
     // first merge (its quiet point in the queue).
     let git = deps.git_log();
     let plan = rig.plan();
-    let second_slug = &plan.workstreams.iter().find(|w| w.id == second).unwrap().slug;
+    let second_slug = &plan
+        .workstreams
+        .iter()
+        .find(|w| w.id == second)
+        .unwrap()
+        .slug;
     let second_branch = format!("bridge/{}/{}", plan.slug, second_slug);
     let merge_idx = git
         .iter()
@@ -215,13 +234,23 @@ async fn full_mission_two_parallel_workstreams() {
         .iter()
         .position(|c| matches!(c, GitCall::Rebase { branch, target } if *branch == second_branch && target == "main"))
         .expect("second workstream rebased onto main");
-    assert!(merge_idx < rebase_idx, "post-merge rebase must follow the merge");
+    assert!(
+        merge_idx < rebase_idx,
+        "post-merge rebase must follow the merge"
+    );
 
-    rig.send(BridgeCommand::ConfirmMerge { workstream: second, approved: true }).await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: second,
+        approved: true,
+    })
+    .await;
     rig.wait_for("mission complete", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Complete, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Complete,
+                ..
+            })
         )
     })
     .await;
@@ -278,13 +307,19 @@ async fn full_mission_two_parallel_workstreams() {
     // Kobayashi worktrees are removed mid-mission; here we assert the two
     // implementation worktrees are gone and both workstreams disarmed.
     let disarmed = deps.disarmed.lock().unwrap().clone();
-    assert!(disarmed.contains(&first) && disarmed.contains(&second), "both disarmed: {disarmed:?}");
+    assert!(
+        disarmed.contains(&first) && disarmed.contains(&second),
+        "both disarmed: {disarmed:?}"
+    );
     let impl_removed = deps
         .git_log()
         .into_iter()
         .filter(|c| matches!(c, GitCall::RemoveWorktree { path, .. } if !path.to_string_lossy().contains("throwaway")))
         .count();
-    assert_eq!(impl_removed, 2, "both implementation worktrees removed on mission end");
+    assert_eq!(
+        impl_removed, 2,
+        "both implementation worktrees removed on mission end"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -305,12 +340,21 @@ async fn breached_rounds_fix_in_original_worktree_then_flag_and_override() {
     let ws = rig.ws_id("solo");
 
     rig.wait_for("workstream flagged", |e| {
-        matches!(e, BridgeEvent::WorkstreamStatus { status: WorkstreamStatus::Flagged, .. })
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Flagged,
+                ..
+            }
+        )
     })
     .await;
 
     // No merge proposal for a flagged workstream.
-    assert!(rig.proposals().is_empty(), "flagged workstream must not propose a merge");
+    assert!(
+        rig.proposals().is_empty(),
+        "flagged workstream must not propose a merge"
+    );
 
     // One work order + two fix orders, all in the ORIGINAL worktree, with
     // the session resumed from the first turn (continuity).
@@ -322,7 +366,10 @@ async fn breached_rounds_fix_in_original_worktree_then_flag_and_override() {
     assert_eq!(helm.len(), 3, "work + 2 fix orders (3rd breach flags)");
     let worktree = deps.root.path().join("breach-mission").join("solo");
     for t in &helm {
-        assert_eq!(t.inv.cwd, worktree, "fix orders run in the original worktree");
+        assert_eq!(
+            t.inv.cwd, worktree,
+            "fix orders run in the original worktree"
+        );
     }
     assert_eq!(helm[0].inv.resume, None);
     for fix in &helm[1..] {
@@ -331,7 +378,10 @@ async fn breached_rounds_fix_in_original_worktree_then_flag_and_override() {
             Some(SessionId("sess-solo".into())),
             "fix orders resume the recorded helm session"
         );
-        assert!(fix.inv.prompt.contains("hole-"), "fix prompt lists the findings");
+        assert!(
+            fix.inv.prompt.contains("hole-"),
+            "fix prompt lists the findings"
+        );
     }
 
     // Three fresh kobayashi rounds (fresh session each).
@@ -359,14 +409,16 @@ async fn breached_rounds_fix_in_original_worktree_then_flag_and_override() {
     );
 
     // Explicit user override lets it enter the merge queue.
-    rig.send(BridgeCommand::OverrideFlagged { workstream: ws }).await;
+    rig.send(BridgeCommand::OverrideFlagged { workstream: ws })
+        .await;
     rig.wait_for("flagged workstream enqueued", |e| {
         matches!(e, BridgeEvent::MergeQueueUpdate(entries) if entries.iter().any(|q| q.workstream == ws))
     })
     .await;
-    rig.wait_for("merge proposal after override", |e| {
-        matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == ws)
-    })
+    rig.wait_for(
+        "merge proposal after override",
+        |e| matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == ws),
+    )
     .await;
 
     assert!(matches!(rig.shutdown().await, Ok(())));
@@ -379,7 +431,9 @@ async fn breached_rounds_fix_in_original_worktree_then_flag_and_override() {
 #[tokio::test(start_paused = true)]
 async fn rebase_conflict_gets_fix_order_and_fresh_round_before_confirmation() {
     let deps = MockDeps::new();
-    deps.push_rebase(RebaseOutcome::Conflicts { files: vec![PathBuf::from("src/x.rs")] });
+    deps.push_rebase(RebaseOutcome::Conflicts {
+        files: vec![PathBuf::from("src/x.rs")],
+    });
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
     rig.start("conflicted mission").await;
     let ws = rig.ws_id("solo");
@@ -398,7 +452,10 @@ async fn rebase_conflict_gets_fix_order_and_fresh_round_before_confirmation() {
     assert_eq!(helm.len(), 2, "work order + conflict fix order");
     let fix = &helm[1];
     assert!(fix.inv.prompt.contains("src/x.rs"));
-    assert_eq!(fix.inv.cwd, deps.root.path().join("conflicted-mission").join("solo"));
+    assert_eq!(
+        fix.inv.cwd,
+        deps.root.path().join("conflicted-mission").join("solo")
+    );
 
     // A FRESH kobayashi round ran after the fix, before the confirmation.
     let kobayashi_count = deps
@@ -413,11 +470,18 @@ async fn rebase_conflict_gets_fix_order_and_fresh_round_before_confirmation() {
     assert!(statuses.contains(&WorkstreamStatus::ConflictFix));
     assert!(statuses.contains(&WorkstreamStatus::UnderTest { round: 2 }));
 
-    rig.send(BridgeCommand::ConfirmMerge { workstream: ws, approved: true }).await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: ws,
+        approved: true,
+    })
+    .await;
     rig.wait_for("mission complete", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Complete, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Complete,
+                ..
+            })
         )
     })
     .await;
@@ -449,7 +513,12 @@ async fn budget_exhaustion_pauses_dispatch_and_extend_resumes() {
     // No TurnPort call beyond the captain, and no provisioning either.
     assert_eq!(deps.turn_log().len(), 1);
     assert_eq!(deps.turn_log()[0].station, Station::Captain);
-    assert!(!deps.git_log().iter().any(|c| matches!(c, GitCall::CreateWorktree { .. })));
+    assert!(
+        !deps
+            .git_log()
+            .iter()
+            .any(|c| matches!(c, GitCall::CreateWorktree { .. }))
+    );
 
     rig.send(BridgeCommand::ExtendBudget(BudgetExtension {
         extra_total_turns: 50,
@@ -460,7 +529,10 @@ async fn budget_exhaustion_pauses_dispatch_and_extend_resumes() {
     rig.wait_for("resumed", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Executing, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
         )
     })
     .await;
@@ -480,7 +552,9 @@ async fn screen_rejected_fails_workstream_without_any_helm_turn() {
     let deps = MockDeps::new();
     deps.set_screen_fn(|order| {
         if order.station == Station::Helm {
-            bridge_tactical::ScreenResult::Rejected { reason: "tool overreach".into() }
+            bridge_tactical::ScreenResult::Rejected {
+                reason: "tool overreach".into(),
+            }
         } else {
             bridge_tactical::ScreenResult::Cleared
         }
@@ -535,7 +609,9 @@ async fn screen_needs_review_waits_for_escalation_approval() {
             matches!(e, BridgeEvent::EscalationRequested(_))
         })
         .await;
-    let BridgeEvent::EscalationRequested(ticket) = ev else { unreachable!() };
+    let BridgeEvent::EscalationRequested(ticket) = ev else {
+        unreachable!()
+    };
     assert!(ticket.question.contains("embedded instruction smell"));
 
     // Dispatch is held: no helm turn yet.
@@ -564,7 +640,9 @@ async fn screen_needs_review_denied_fails_the_workstream() {
     let flagged_once = AtomicBool::new(false);
     deps.set_screen_fn(move |order| {
         if order.station == Station::Helm && !flagged_once.swap(true, Ordering::SeqCst) {
-            bridge_tactical::ScreenResult::NeedsReview { flags: vec!["sus".into()] }
+            bridge_tactical::ScreenResult::NeedsReview {
+                flags: vec!["sus".into()],
+            }
         } else {
             bridge_tactical::ScreenResult::Cleared
         }
@@ -577,10 +655,14 @@ async fn screen_needs_review_denied_fails_the_workstream() {
             matches!(e, BridgeEvent::EscalationRequested(_))
         })
         .await;
-    let BridgeEvent::EscalationRequested(ticket) = ev else { unreachable!() };
+    let BridgeEvent::EscalationRequested(ticket) = ev else {
+        unreachable!()
+    };
     rig.send(BridgeCommand::ResolveEscalation {
         id: ticket.id,
-        decision: UserDecision::Deny { reason: "not comfortable".into() },
+        decision: UserDecision::Deny {
+            reason: "not comfortable".into(),
+        },
     })
     .await;
     rig.wait_for("workstream failed", |e| {
@@ -596,7 +678,10 @@ async fn screen_needs_review_denied_fails_the_workstream() {
     rig.wait_for("mission failed", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Failed { .. }, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Failed { .. },
+                ..
+            })
         )
     })
     .await;
@@ -611,7 +696,9 @@ async fn unanswered_screening_escalation_times_out_to_deny() {
     let flagged_once = AtomicBool::new(false);
     deps.set_screen_fn(move |order| {
         if order.station == Station::Helm && !flagged_once.swap(true, Ordering::SeqCst) {
-            bridge_tactical::ScreenResult::NeedsReview { flags: vec!["sus".into()] }
+            bridge_tactical::ScreenResult::NeedsReview {
+                flags: vec!["sus".into()],
+            }
         } else {
             bridge_tactical::ScreenResult::Cleared
         }
@@ -661,9 +748,10 @@ async fn resolve_escalation_forwards_hook_ticket_to_broker() {
     })
     .await;
 
-    rig.wait_for("hook escalation resolved", |e| {
-        matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == hook_id)
-    })
+    rig.wait_for(
+        "hook escalation resolved",
+        |e| matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == hook_id),
+    )
     .await;
 
     rig.wait_until("broker received the resolution", || {
@@ -687,7 +775,9 @@ async fn resync_reemits_open_escalations() {
     let flagged_once = AtomicBool::new(false);
     deps.set_screen_fn(move |order| {
         if order.station == Station::Helm && !flagged_once.swap(true, Ordering::SeqCst) {
-            bridge_tactical::ScreenResult::NeedsReview { flags: vec!["sus".into()] }
+            bridge_tactical::ScreenResult::NeedsReview {
+                flags: vec!["sus".into()],
+            }
         } else {
             bridge_tactical::ScreenResult::Cleared
         }
@@ -696,19 +786,29 @@ async fn resync_reemits_open_escalations() {
     rig.start("resync mission").await;
 
     let ev = rig
-        .wait_for("first escalation", |e| matches!(e, BridgeEvent::EscalationRequested(_)))
+        .wait_for("first escalation", |e| {
+            matches!(e, BridgeEvent::EscalationRequested(_))
+        })
         .await;
-    let BridgeEvent::EscalationRequested(original) = ev else { unreachable!() };
+    let BridgeEvent::EscalationRequested(original) = ev else {
+        unreachable!()
+    };
 
     // Simulate a consumer that lagged and lost the event: ask for a resync.
     rig.send(BridgeCommand::ResyncActionable).await;
     let ev = rig
-        .wait_for("re-emitted escalation", |e| {
-            matches!(e, BridgeEvent::EscalationRequested(t) if t.id == original.id)
-        })
+        .wait_for(
+            "re-emitted escalation",
+            |e| matches!(e, BridgeEvent::EscalationRequested(t) if t.id == original.id),
+        )
         .await;
-    let BridgeEvent::EscalationRequested(reemitted) = ev else { unreachable!() };
-    assert_eq!(reemitted.id, original.id, "same ticket re-emitted on resync");
+    let BridgeEvent::EscalationRequested(reemitted) = ev else {
+        unreachable!()
+    };
+    assert_eq!(
+        reemitted.id, original.id,
+        "same ticket re-emitted on resync"
+    );
 
     // Resolving it once still works (not duplicated into two live tickets).
     rig.send(BridgeCommand::ResolveEscalation {
@@ -716,9 +816,10 @@ async fn resync_reemits_open_escalations() {
         decision: UserDecision::Approve,
     })
     .await;
-    rig.wait_for("resolved", |e| {
-        matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == original.id)
-    })
+    rig.wait_for(
+        "resolved",
+        |e| matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == original.id),
+    )
     .await;
     let _ = rig.shutdown().await;
 }
@@ -734,7 +835,13 @@ async fn shutdown_mid_mission_returns_ok_with_no_further_dispatches() {
     rig.start("doomed mission").await;
 
     rig.wait_for("helm working", |e| {
-        matches!(e, BridgeEvent::WorkstreamStatus { status: WorkstreamStatus::Working, .. })
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Working,
+                ..
+            }
+        )
     })
     .await;
     rig.wait_until("helm turn in flight", || {
@@ -744,8 +851,15 @@ async fn shutdown_mid_mission_returns_ok_with_no_further_dispatches() {
     let before = deps.turn_log().len();
 
     let result = rig.shutdown().await;
-    assert!(matches!(result, Ok(())), "shutdown returns Ok, got {result:?}");
-    assert_eq!(deps.turn_log().len(), before, "no dispatches after shutdown");
+    assert!(
+        matches!(result, Ok(())),
+        "shutdown returns Ok, got {result:?}"
+    );
+    assert_eq!(
+        deps.turn_log().len(),
+        before,
+        "no dispatches after shutdown"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -760,9 +874,10 @@ async fn dependent_workstream_only_provisioned_after_dependency_merges() {
     let base = rig.ws_id("base");
     let addon = rig.ws_id("addon");
 
-    rig.wait_for("base merge proposal", |e| {
-        matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == base)
-    })
+    rig.wait_for(
+        "base merge proposal",
+        |e| matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == base),
+    )
     .await;
     // The dependent has not been touched yet.
     assert!(!deps.git_log().iter().any(|c| matches!(
@@ -771,36 +886,56 @@ async fn dependent_workstream_only_provisioned_after_dependency_merges() {
     )));
     assert_eq!(deps.statuses_for(addon), vec![WorkstreamStatus::Pending]);
 
-    rig.send(BridgeCommand::ConfirmMerge { workstream: base, approved: true }).await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: base,
+        approved: true,
+    })
+    .await;
     rig.wait_for("base merged", |e| {
         matches!(e, BridgeEvent::WorkstreamStatus { id, status: WorkstreamStatus::Merged } if *id == base)
     })
     .await;
 
     rig.wait_until("addon provisioned after merge", || {
-        deps.git_log().iter().any(|c| matches!(
-            c,
-            GitCall::CreateWorktree { ws, .. } if ws == "addon"
-        ))
+        deps.git_log().iter().any(|c| {
+            matches!(
+                c,
+                GitCall::CreateWorktree { ws, .. } if ws == "addon"
+            )
+        })
     })
     .await;
     let git = deps.git_log();
-    let merge_idx = git.iter().position(|c| matches!(c, GitCall::Merge { .. })).unwrap();
+    let merge_idx = git
+        .iter()
+        .position(|c| matches!(c, GitCall::Merge { .. }))
+        .unwrap();
     let create_idx = git
         .iter()
         .position(|c| matches!(c, GitCall::CreateWorktree { ws, .. } if ws == "addon"))
         .unwrap();
-    assert!(merge_idx < create_idx, "addon must be provisioned only after base merged");
+    assert!(
+        merge_idx < create_idx,
+        "addon must be provisioned only after base merged"
+    );
 
-    rig.wait_for("addon merge proposal", |e| {
-        matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == addon)
+    rig.wait_for(
+        "addon merge proposal",
+        |e| matches!(e, BridgeEvent::MergeConfirmationRequested(p) if p.workstream == addon),
+    )
+    .await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: addon,
+        approved: true,
     })
     .await;
-    rig.send(BridgeCommand::ConfirmMerge { workstream: addon, approved: true }).await;
     rig.wait_for("mission complete", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Complete, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Complete,
+                ..
+            })
         )
     })
     .await;
@@ -815,7 +950,10 @@ async fn rate_limit_hit_pauses_and_probe_resumes() {
     let deps = MockDeps::new();
     deps.push_turn(
         Station::Helm,
-        TurnResponse::rate_limited(RateLimitHit { retry_at: None, trigger: "rate_limit_event".into() }),
+        TurnResponse::rate_limited(RateLimitHit {
+            retry_at: None,
+            trigger: "rate_limit_event".into(),
+        }),
     );
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
     rig.start("throttled mission").await;
@@ -828,7 +966,9 @@ async fn rate_limit_hit_pauses_and_probe_resumes() {
         matches!(
             e,
             BridgeEvent::MissionStatus(MissionStatusUpdate {
-                state: MissionState::Paused { reason: PauseReason::RateLimited { .. } },
+                state: MissionState::Paused {
+                    reason: PauseReason::RateLimited { .. }
+                },
                 ..
             })
         )
@@ -842,13 +982,18 @@ async fn rate_limit_hit_pauses_and_probe_resumes() {
     rig.wait_for("executing again", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Executing, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
         )
     })
     .await;
     // The held-back kobayashi round dispatches after the resume.
     rig.wait_until("kobayashi round after resume", || {
-        deps.turn_log().iter().any(|t| t.station == Station::KobayashiMaru)
+        deps.turn_log()
+            .iter()
+            .any(|t| t.station == Station::KobayashiMaru)
     })
     .await;
 
@@ -861,21 +1006,35 @@ async fn rate_limit_hit_pauses_and_probe_resumes() {
 #[tokio::test(start_paused = true)]
 async fn resumed_plan_skips_captain_and_starts_working() {
     let deps = MockDeps::new();
-    let draft: PlanDraft = serde_json::from_value(crate::testutil::draft_json(&[("solo", &[])])).unwrap();
-    let plan =
-        MissionPlan::from_draft(draft, MissionId::new(), "resumed-mission", "carry on", "main")
-            .unwrap();
+    let draft: PlanDraft =
+        serde_json::from_value(crate::testutil::draft_json(&[("solo", &[])])).unwrap();
+    let plan = MissionPlan::from_draft(
+        draft,
+        MissionId::new(),
+        "resumed-mission",
+        "carry on",
+        "main",
+    )
+    .unwrap();
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
 
     rig.wait_for("executing", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Executing, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
         )
     })
     .await;
-    rig.wait_until("helm turn", || !deps.turn_log().is_empty()).await;
-    assert_eq!(deps.turn_log()[0].station, Station::Helm, "no captain turn on resume");
+    rig.wait_until("helm turn", || !deps.turn_log().is_empty())
+        .await;
+    assert_eq!(
+        deps.turn_log()[0].station,
+        Station::Helm,
+        "no captain turn on resume"
+    );
 
     rig.wait_for("merge proposal", |e| {
         matches!(e, BridgeEvent::MergeConfirmationRequested(_))
@@ -910,7 +1069,9 @@ async fn battle_reports_are_filed_on_the_bus() {
             matches!(e, BridgeEvent::BattleReportFiled(_))
         })
         .await;
-    let BridgeEvent::BattleReportFiled(report) = ev else { unreachable!() };
+    let BridgeEvent::BattleReportFiled(report) = ev else {
+        unreachable!()
+    };
     let expected: BattleReport = BattleReport {
         workstream: rig.ws_id("solo"),
         round: 1,

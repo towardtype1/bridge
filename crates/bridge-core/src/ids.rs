@@ -145,7 +145,8 @@ mod tests {
 
     #[test]
     fn session_id_is_transparent() {
-        let sid: SessionId = serde_json::from_str("\"a2356b0f-c205-48cc-8654-88c062868484\"").unwrap();
+        let sid: SessionId =
+            serde_json::from_str("\"a2356b0f-c205-48cc-8654-88c062868484\"").unwrap();
         assert_eq!(sid.0, "a2356b0f-c205-48cc-8654-88c062868484");
     }
 

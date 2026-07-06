@@ -396,7 +396,10 @@ mod tests {
             id: ws,
             status: WorkstreamStatus::ReadyToMerge,
         });
-        assert_eq!(s.workstreams[&ws].status, Some(WorkstreamStatus::ReadyToMerge));
+        assert_eq!(
+            s.workstreams[&ws].status,
+            Some(WorkstreamStatus::ReadyToMerge)
+        );
         assert_eq!(s.workstream_order, vec![ws], "no duplicate order entry");
     }
 
@@ -484,7 +487,10 @@ mod tests {
         let mut s = AppState::default();
         let ws = WorkstreamId::new();
         for i in 0..(MAX_FEED + 2) {
-            s.apply(BridgeEvent::HookDecision(hook_decision(ws, &format!("r{i}"))));
+            s.apply(BridgeEvent::HookDecision(hook_decision(
+                ws,
+                &format!("r{i}"),
+            )));
         }
         assert_eq!(s.tactical_feed.len(), MAX_FEED);
         assert_eq!(s.tactical_feed[0].rule, "r2");
@@ -517,7 +523,9 @@ mod tests {
         // Unknown id is a no-op, never a panic.
         s.apply(BridgeEvent::EscalationResolved {
             id: EscalationId::new(),
-            decision: UserDecision::Deny { reason: "no".into() },
+            decision: UserDecision::Deny {
+                reason: "no".into(),
+            },
         });
         assert_eq!(s.escalations.len(), 1);
     }
@@ -529,7 +537,10 @@ mod tests {
         s.apply(BridgeEvent::RateLimit(RateLimitState::Hit {
             retry_at: Some(at),
         }));
-        assert_eq!(s.rate_limit, Some(RateLimitState::Hit { retry_at: Some(at) }));
+        assert_eq!(
+            s.rate_limit,
+            Some(RateLimitState::Hit { retry_at: Some(at) })
+        );
         s.apply(BridgeEvent::RateLimit(RateLimitState::Cleared));
         assert_eq!(s.rate_limit, None, "Cleared clears the banner entirely");
     }
@@ -553,7 +564,10 @@ mod tests {
             position: pos,
             state: MergeQueueState::AwaitingRebase,
         };
-        s.apply(BridgeEvent::MergeQueueUpdate(vec![entry(ws1, 0), entry(ws2, 1)]));
+        s.apply(BridgeEvent::MergeQueueUpdate(vec![
+            entry(ws1, 0),
+            entry(ws2, 1),
+        ]));
         assert_eq!(s.merge_queue.len(), 2);
         s.apply(BridgeEvent::MergeQueueUpdate(vec![entry(ws2, 0)]));
         assert_eq!(s.merge_queue.len(), 1);
@@ -576,7 +590,9 @@ mod tests {
         let ws = WorkstreamId::new();
         let other = WorkstreamId::new();
         s.apply(BridgeEvent::MergeConfirmationRequested(proposal(ws, "m")));
-        s.apply(BridgeEvent::MergeConfirmationRequested(proposal(other, "o")));
+        s.apply(BridgeEvent::MergeConfirmationRequested(proposal(
+            other, "o",
+        )));
         s.apply(BridgeEvent::WorkstreamStatus {
             id: ws,
             status: WorkstreamStatus::Merged,
@@ -642,7 +658,10 @@ mod tests {
     fn remove_escalation_is_local_caller_side_removal() {
         let mut s = AppState::default();
         let id = EscalationId::new();
-        s.apply(BridgeEvent::EscalationRequested(ticket(id, WorkstreamId::new())));
+        s.apply(BridgeEvent::EscalationRequested(ticket(
+            id,
+            WorkstreamId::new(),
+        )));
         s.ui.deny_reasons.insert(id, "because".into());
         s.remove_escalation(id);
         assert!(s.escalations.is_empty());
@@ -658,7 +677,11 @@ mod tests {
         s.apply(BridgeEvent::BudgetUpdate(snapshot(200, 120)));
         assert_eq!(s.budget_fraction(), Some(1.0), "clamped at 1.0");
         s.apply(BridgeEvent::BudgetUpdate(snapshot(5, 0)));
-        assert_eq!(s.budget_fraction(), Some(1.0), "zero ceiling counts as full");
+        assert_eq!(
+            s.budget_fraction(),
+            Some(1.0),
+            "zero ceiling counts as full"
+        );
     }
 
     #[test]
@@ -695,7 +718,9 @@ mod tests {
             Some("RATE LIMITED - retrying now")
         );
 
-        s.apply(BridgeEvent::RateLimit(RateLimitState::Hit { retry_at: None }));
+        s.apply(BridgeEvent::RateLimit(RateLimitState::Hit {
+            retry_at: None,
+        }));
         assert_eq!(
             s.rate_limit_countdown_text(now).as_deref(),
             Some("RATE LIMITED - waiting for reset")
@@ -727,8 +752,14 @@ mod tests {
     #[test]
     fn status_labels_are_stable() {
         assert_eq!(status_label(&WorkstreamStatus::Pending), "PENDING");
-        assert_eq!(status_label(&WorkstreamStatus::UnderTest { round: 2 }), "KOBAYASHI R2");
-        assert_eq!(status_label(&WorkstreamStatus::Breached { round: 3 }), "BREACHED R3");
+        assert_eq!(
+            status_label(&WorkstreamStatus::UnderTest { round: 2 }),
+            "KOBAYASHI R2"
+        );
+        assert_eq!(
+            status_label(&WorkstreamStatus::Breached { round: 3 }),
+            "BREACHED R3"
+        );
         assert_eq!(status_label(&WorkstreamStatus::Flagged), "FLAGGED");
         assert_eq!(
             status_label(&WorkstreamStatus::Failed { reason: "x".into() }),
@@ -741,12 +772,16 @@ mod tests {
         assert_eq!(mission_state_label(&MissionState::Planning), "PLANNING");
         assert_eq!(
             mission_state_label(&MissionState::Paused {
-                reason: PauseReason::BudgetExhausted { which: "max_total_turns".into() }
+                reason: PauseReason::BudgetExhausted {
+                    which: "max_total_turns".into()
+                }
             }),
             "PAUSED - budget exhausted (max_total_turns)"
         );
         assert_eq!(
-            mission_state_label(&MissionState::Failed { reason: "engine down".into() }),
+            mission_state_label(&MissionState::Failed {
+                reason: "engine down".into()
+            }),
             "FAILED - engine down"
         );
     }

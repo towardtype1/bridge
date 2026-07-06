@@ -261,9 +261,18 @@ mod tests {
     #[test]
     fn captain_gets_linear_tools_only_when_configured() {
         let without = station_profile(Station::Captain, &cfg());
-        assert!(!without.allowed_tools.iter().any(|t| t.starts_with("mcp__linear")));
+        assert!(
+            !without
+                .allowed_tools
+                .iter()
+                .any(|t| t.starts_with("mcp__linear"))
+        );
         let with = station_profile(Station::Captain, &cfg_with_linear());
-        assert!(with.allowed_tools.iter().any(|t| t.starts_with("mcp__linear")));
+        assert!(
+            with.allowed_tools
+                .iter()
+                .any(|t| t.starts_with("mcp__linear"))
+        );
     }
 
     #[test]
@@ -277,7 +286,12 @@ mod tests {
 
     #[test]
     fn agent_stations_use_default_model_and_have_prompts() {
-        for station in [Station::Captain, Station::Helm, Station::Science, Station::Comms] {
+        for station in [
+            Station::Captain,
+            Station::Helm,
+            Station::Science,
+            Station::Comms,
+        ] {
             let p = station_profile(station, &cfg());
             assert_eq!(p.model, "test-default-model", "{station}");
             assert!(!p.append_system_prompt.is_empty(), "{station}");

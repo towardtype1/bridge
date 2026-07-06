@@ -46,13 +46,25 @@ fn git(home: &Path, dir: &Path, args: &[&str]) -> String {
 
 fn init_repo(home: &Path, base: &Path, name: &str, initial_branch: &str) -> PathBuf {
     let repo = base.join(name);
-    git(home, base, &["init", "-q", "-b", initial_branch, repo.to_str().unwrap()]);
+    git(
+        home,
+        base,
+        &["init", "-q", "-b", initial_branch, repo.to_str().unwrap()],
+    );
     git(home, &repo, &["config", "user.name", "Bridge Test"]);
-    git(home, &repo, &["config", "user.email", "bridge@test.invalid"]);
+    git(
+        home,
+        &repo,
+        &["config", "user.email", "bridge@test.invalid"],
+    );
     git(home, &repo, &["config", "commit.gpgsign", "false"]);
     let hooks = base.join("hooks-empty");
     fs::create_dir_all(&hooks).unwrap();
-    git(home, &repo, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    git(
+        home,
+        &repo,
+        &["config", "core.hooksPath", hooks.to_str().unwrap()],
+    );
     repo
 }
 
@@ -101,13 +113,23 @@ fn setup() -> TestEnv {
     let home = base.join("home");
     fs::create_dir_all(&home).unwrap();
     let repo = init_repo(&home, &base, "repo", "main");
-    git(&home, &repo, &["commit", "-q", "--allow-empty", "-m", "root"]);
+    git(
+        &home,
+        &repo,
+        &["commit", "-q", "--allow-empty", "-m", "root"],
+    );
     let seed = repo.join("seed.txt");
     fs::write(&seed, "seed line one\n").unwrap();
     git(&home, &repo, &["add", "seed.txt"]);
     git(&home, &repo, &["commit", "-q", "-m", "seed"]);
     let mgr = WorktreeManager::new(repo.clone(), base.join("wts")).expect("manager should build");
-    TestEnv { _tmp: tmp, base, home, repo, mgr }
+    TestEnv {
+        _tmp: tmp,
+        base,
+        home,
+        repo,
+        mgr,
+    }
 }
 
 fn assert_invalid(err: &GitError, needle: &str) {
@@ -180,7 +202,10 @@ fn create_makes_branch_and_worktree_at_base_ref() {
     assert_eq!(handle.branch, "bridge/m1/ws1");
     assert_eq!(handle.path, env.mgr.worktrees_root().join("m1").join("ws1"));
     assert!(handle.path.join("seed.txt").is_file());
-    assert!(!handle.path.join("later.txt").exists(), "worktree must be at base_ref");
+    assert!(
+        !handle.path.join("later.txt").exists(),
+        "worktree must be at base_ref"
+    );
 
     let checked_out = env.git(&handle.path, &["rev-parse", "--abbrev-ref", "HEAD"]);
     assert_eq!(checked_out.trim(), "bridge/m1/ws1");
@@ -212,7 +237,9 @@ fn create_throwaway_is_detached_at_branch_head() {
 
     let throwaway = env.mgr.create_throwaway("bridge/m1/ws1").unwrap();
     assert!(
-        throwaway.path.starts_with(env.mgr.worktrees_root().join("throwaway")),
+        throwaway
+            .path
+            .starts_with(env.mgr.worktrees_root().join("throwaway")),
         "throwaway path {} must live under <root>/throwaway/",
         throwaway.path.display()
     );
@@ -258,7 +285,10 @@ fn remove_dirty_worktree_requires_force() {
     fs::write(handle.path.join("seed.txt"), "dirty\n").unwrap();
 
     let err = env.mgr.remove(&handle, false).unwrap_err();
-    assert!(matches!(err, GitError::Command { .. }), "expected Command error, got {err:?}");
+    assert!(
+        matches!(err, GitError::Command { .. }),
+        "expected Command error, got {err:?}"
+    );
     assert!(handle.path.exists());
 
     env.mgr.remove(&handle, true).unwrap();
@@ -280,7 +310,10 @@ fn delete_branch_merged_and_unmerged() {
     env.commit_file(&h2.path, "ws2.txt", "x\n", "unmerged work");
     env.mgr.remove(&h2, false).unwrap();
     let err = env.mgr.delete_branch("bridge/m1/ws2", false).unwrap_err();
-    assert!(matches!(err, GitError::Command { .. }), "expected Command error, got {err:?}");
+    assert!(
+        matches!(err, GitError::Command { .. }),
+        "expected Command error, got {err:?}"
+    );
     env.mgr.delete_branch("bridge/m1/ws2", true).unwrap();
     assert!(env.mgr.rev_parse("bridge/m1/ws2").is_err());
 }
@@ -300,17 +333,29 @@ fn rebase_onto_clean_rewrites_parent() {
     assert_eq!(outcome, RebaseOutcome::Clean);
 
     let parent = env.git(&handle.path, &["rev-parse", "HEAD~1"]);
-    assert_eq!(parent.trim(), main_sha, "rebased commit must sit on top of main");
+    assert_eq!(
+        parent.trim(),
+        main_sha,
+        "rebased commit must sit on top of main"
+    );
     assert!(handle.path.join("main2.txt").is_file());
     // Branch ref moved with the worktree HEAD.
-    assert_eq!(env.mgr.rev_parse("bridge/m1/ws1").unwrap(), env.head(&handle.path));
+    assert_eq!(
+        env.mgr.rev_parse("bridge/m1/ws1").unwrap(),
+        env.head(&handle.path)
+    );
 }
 
 #[test]
 fn rebase_onto_conflict_reports_files_and_leaves_worktree_clean() {
     let env = setup();
     let handle = env.mgr.create("m1", "ws1", "main").unwrap();
-    let pre = env.commit_file(&handle.path, "seed.txt", "workstream version\n", "ws seed edit");
+    let pre = env.commit_file(
+        &handle.path,
+        "seed.txt",
+        "workstream version\n",
+        "ws seed edit",
+    );
     env.commit_file(&env.repo, "seed.txt", "main version\n", "main seed edit");
 
     let outcome = env.mgr.rebase_onto(&handle, "main").unwrap();
@@ -326,7 +371,10 @@ fn rebase_onto_conflict_reports_files_and_leaves_worktree_clean() {
     assert_eq!(env.head(&handle.path), pre);
     assert_eq!(env.mgr.rev_parse("bridge/m1/ws1").unwrap(), pre);
     let abort = env.git_raw(&handle.path, &["rebase", "--abort"]);
-    assert!(!abort.status.success(), "no rebase should be in progress after conflict handling");
+    assert!(
+        !abort.status.success(),
+        "no rebase should be in progress after conflict handling"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +387,10 @@ fn merge_into_main_rebase_mode_fast_forwards() {
     let handle = env.mgr.create("m1", "ws1", "main").unwrap();
     let ws_sha = env.commit_file(&handle.path, "ws.txt", "ws\n", "ws work");
 
-    let outcome = env.mgr.merge_into_main("bridge/m1/ws1", MergeMode::Rebase).unwrap();
+    let outcome = env
+        .mgr
+        .merge_into_main("bridge/m1/ws1", MergeMode::Rebase)
+        .unwrap();
     assert_eq!(outcome.main_head, ws_sha);
     assert_eq!(env.mgr.rev_parse("main").unwrap(), ws_sha);
     // Fast-forward updated the main checkout's working tree.
@@ -353,7 +404,10 @@ fn merge_into_main_rebase_mode_refuses_non_descendant() {
     env.commit_file(&handle.path, "ws.txt", "ws\n", "ws work");
     env.commit_file(&env.repo, "main2.txt", "m2\n", "main advance");
 
-    let err = env.mgr.merge_into_main("bridge/m1/ws1", MergeMode::Rebase).unwrap_err();
+    let err = env
+        .mgr
+        .merge_into_main("bridge/m1/ws1", MergeMode::Rebase)
+        .unwrap_err();
     assert_invalid(&err, "descendant");
 }
 
@@ -364,7 +418,10 @@ fn merge_into_main_merge_commit_mode_creates_merge_commit() {
     let handle = env.mgr.create("m1", "ws1", "main").unwrap();
     let ws_sha = env.commit_file(&handle.path, "ws.txt", "ws\n", "ws work");
 
-    let outcome = env.mgr.merge_into_main("bridge/m1/ws1", MergeMode::MergeCommit).unwrap();
+    let outcome = env
+        .mgr
+        .merge_into_main("bridge/m1/ws1", MergeMode::MergeCommit)
+        .unwrap();
     let main_head = env.mgr.rev_parse("main").unwrap();
     assert_eq!(outcome.main_head, main_head);
     let p1 = env.git(&env.repo, &["rev-parse", "main^1"]);
@@ -381,9 +438,16 @@ fn merge_into_main_refuses_dirty_main_checkout() {
     env.commit_file(&handle.path, "ws.txt", "ws\n", "ws work");
     fs::write(env.repo.join("seed.txt"), "uncommitted local edit\n").unwrap();
 
-    let err = env.mgr.merge_into_main("bridge/m1/ws1", MergeMode::Rebase).unwrap_err();
+    let err = env
+        .mgr
+        .merge_into_main("bridge/m1/ws1", MergeMode::Rebase)
+        .unwrap_err();
     assert_invalid(&err, "dirty");
-    assert_eq!(env.mgr.rev_parse("main").unwrap(), pre_main, "main must not move");
+    assert_eq!(
+        env.mgr.rev_parse("main").unwrap(),
+        pre_main,
+        "main must not move"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +481,11 @@ fn main_branch_prefers_origin_head() {
     let env = setup();
     env.git(
         &env.repo,
-        &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/trunk",
+        ],
     );
     assert_eq!(env.mgr.main_branch().unwrap(), "trunk");
 }
@@ -434,14 +502,23 @@ fn add_worktree_exclude_hides_files_from_status() {
     fs::write(handle.path.join(".claude/settings.json"), "{}\n").unwrap();
 
     assert!(env.status_porcelain(&handle.path).contains(".claude"));
-    env.mgr.add_worktree_exclude(&handle, &[".claude/"]).unwrap();
-    assert_eq!(env.status_porcelain(&handle.path), "", "excluded files must vanish from status");
+    env.mgr
+        .add_worktree_exclude(&handle, &[".claude/"])
+        .unwrap();
+    assert_eq!(
+        env.status_porcelain(&handle.path),
+        "",
+        "excluded files must vanish from status"
+    );
 
     // The pattern landed exactly where the worktree's own plumbing points.
     let reported = env.git(&handle.path, &["rev-parse", "--git-path", "info/exclude"]);
     let reported = PathBuf::from(reported.trim());
-    let exclude_path =
-        if reported.is_relative() { handle.path.join(reported) } else { reported };
+    let exclude_path = if reported.is_relative() {
+        handle.path.join(reported)
+    } else {
+        reported
+    };
     let content = fs::read_to_string(&exclude_path).unwrap();
     assert!(content.contains(".claude/"));
 }
@@ -450,13 +527,20 @@ fn add_worktree_exclude_hides_files_from_status() {
 fn add_worktree_exclude_appends_without_duplicates() {
     let env = setup();
     let handle = env.mgr.create("m1", "ws1", "main").unwrap();
-    env.mgr.add_worktree_exclude(&handle, &[".claude/", "*.tmp"]).unwrap();
-    env.mgr.add_worktree_exclude(&handle, &[".claude/"]).unwrap();
+    env.mgr
+        .add_worktree_exclude(&handle, &[".claude/", "*.tmp"])
+        .unwrap();
+    env.mgr
+        .add_worktree_exclude(&handle, &[".claude/"])
+        .unwrap();
 
     let reported = env.git(&handle.path, &["rev-parse", "--git-path", "info/exclude"]);
     let reported = PathBuf::from(reported.trim());
-    let exclude_path =
-        if reported.is_relative() { handle.path.join(reported) } else { reported };
+    let exclude_path = if reported.is_relative() {
+        handle.path.join(reported)
+    } else {
+        reported
+    };
     let content = fs::read_to_string(&exclude_path).unwrap();
     assert_eq!(content.lines().filter(|l| *l == ".claude/").count(), 1);
     assert_eq!(content.lines().filter(|l| *l == "*.tmp").count(), 1);
@@ -475,7 +559,10 @@ fn rev_parse_resolves_refs_and_errors_on_bad_ref() {
     assert_eq!(head, env.head(&env.repo));
 
     let err = env.mgr.rev_parse("no-such-ref").unwrap_err();
-    assert!(matches!(err, GitError::Command { .. }), "expected Command error, got {err:?}");
+    assert!(
+        matches!(err, GitError::Command { .. }),
+        "expected Command error, got {err:?}"
+    );
 }
 
 #[test]
@@ -500,7 +587,10 @@ fn changed_files_against_main_lists_only_branch_files() {
 
     let mut files = env.mgr.changed_files_against_main("bridge/m1/ws1").unwrap();
     files.sort();
-    assert_eq!(files, vec![PathBuf::from("docs/notes.md"), PathBuf::from("feature.rs")]);
+    assert_eq!(
+        files,
+        vec![PathBuf::from("docs/notes.md"), PathBuf::from("feature.rs")]
+    );
 }
 
 #[test]
@@ -514,7 +604,12 @@ fn commits_ahead_returns_oldest_first() {
     assert_eq!(commits, vec![c1, c2]);
 
     // Nothing ahead of itself.
-    assert!(env.mgr.commits_ahead("bridge/m1/ws1", "bridge/m1/ws1").unwrap().is_empty());
+    assert!(
+        env.mgr
+            .commits_ahead("bridge/m1/ws1", "bridge/m1/ws1")
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -532,14 +627,26 @@ fn throwaway_head_diverges_and_harvest_finds_the_commit() {
     // Before any commit the throwaway HEAD equals the branch head: nothing ahead.
     let base_head = env.mgr.head_of(&throwaway).unwrap();
     assert_eq!(base_head, env.mgr.rev_parse(branch).unwrap());
-    assert!(env.mgr.commits_ahead(&base_head, branch).unwrap().is_empty());
+    assert!(
+        env.mgr
+            .commits_ahead(&base_head, branch)
+            .unwrap()
+            .is_empty()
+    );
 
     // The tester commits an adversarial test onto the detached HEAD.
-    let test_commit =
-        env.commit_file(&throwaway.path, "tests/adversarial/t.rs", "#[test] fn t(){}\n", "attack");
+    let test_commit = env.commit_file(
+        &throwaway.path,
+        "tests/adversarial/t.rs",
+        "#[test] fn t(){}\n",
+        "attack",
+    );
     let head = env.mgr.head_of(&throwaway).unwrap();
     assert_eq!(head, test_commit);
-    assert_ne!(head, base_head, "throwaway HEAD must diverge after committing");
+    assert_ne!(
+        head, base_head,
+        "throwaway HEAD must diverge after committing"
+    );
 
     // The OLD buggy call compared the branch against itself: always empty.
     assert!(env.mgr.commits_ahead(branch, branch).unwrap().is_empty());
@@ -580,13 +687,25 @@ fn cherry_pick_conflict_aborts_and_reports_commit() {
     let env = setup();
     let source = env.mgr.create("m1", "ws1", "main").unwrap();
     let clean = env.commit_file(&source.path, "new.txt", "new\n", "clean commit");
-    let conflicting =
-        env.commit_file(&source.path, "seed.txt", "source version\n", "conflicting commit");
+    let conflicting = env.commit_file(
+        &source.path,
+        "seed.txt",
+        "source version\n",
+        "conflicting commit",
+    );
 
     let target = env.mgr.create("m1", "ws2", "main").unwrap();
-    let pre = env.commit_file(&target.path, "seed.txt", "target version\n", "target seed edit");
+    let pre = env.commit_file(
+        &target.path,
+        "seed.txt",
+        "target version\n",
+        "target seed edit",
+    );
 
-    let result = env.mgr.cherry_pick(&target, &[clean.clone(), conflicting.clone()]).unwrap();
+    let result = env
+        .mgr
+        .cherry_pick(&target, &[clean.clone(), conflicting.clone()])
+        .unwrap();
     assert_eq!(result, Err(conflicting));
 
     // The whole sequence was aborted: clean state, HEAD back at pre-pick,
@@ -612,7 +731,15 @@ fn list_bridge_worktrees_returns_only_ours() {
     let external = env.base.join("external");
     env.git(
         &env.repo,
-        &["worktree", "add", "-q", "-b", "external-branch", external.to_str().unwrap(), "main"],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "external-branch",
+            external.to_str().unwrap(),
+            "main",
+        ],
     );
 
     let mut listed = env.mgr.list_bridge_worktrees().unwrap();
@@ -652,7 +779,11 @@ fn read_only_rejects_mutating_subcommands() {
     assert!(env.mgr.read_only(&["-c", "x.y=z", "log"]).is_err());
     // Output-to-file flags on otherwise read-only subcommands are refused.
     assert!(env.mgr.read_only(&["log", "--output=somewhere"]).is_err());
-    assert!(env.mgr.read_only(&["diff", "--output", "somewhere"]).is_err());
+    assert!(
+        env.mgr
+            .read_only(&["diff", "--output", "somewhere"])
+            .is_err()
+    );
 }
 
 #[test]
@@ -676,7 +807,11 @@ fn read_only_propagates_git_failures_as_command_errors() {
     let env = setup();
     let err = env.mgr.read_only(&["log", "no-such-ref"]).unwrap_err();
     match err {
-        GitError::Command { args, status, stderr } => {
+        GitError::Command {
+            args,
+            status,
+            stderr,
+        } => {
             assert!(args.iter().any(|a| a == "no-such-ref"));
             assert_ne!(status, 0);
             assert!(!stderr.is_empty());

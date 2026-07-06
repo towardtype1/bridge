@@ -30,7 +30,10 @@ pub struct PreflightReport {
 /// Run `claude --version` (cheap, no model call) and parse it. Does NOT
 /// probe a full turn by default; `probe_tools` additionally runs a
 /// max-turns-1 haiku no-op to capture the init event's tool list.
-pub async fn preflight(config: &ClaudeConfig, probe_tools: bool) -> Result<PreflightReport, EngineError> {
+pub async fn preflight(
+    config: &ClaudeConfig,
+    probe_tools: bool,
+) -> Result<PreflightReport, EngineError> {
     let mut cmd = Command::new(&config.binary_path);
     cmd.arg("--version")
         .stdin(Stdio::null())

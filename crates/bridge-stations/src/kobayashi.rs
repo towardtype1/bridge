@@ -11,7 +11,9 @@ use crate::engineering::{self, EngineeringError, ProvisionedWorktree};
 use crate::ports::{ComputerPort, GitPort, TacticalPort, TurnPort};
 use crate::prompts;
 use bridge_compat::{ClaudeInvocation, OutputFormat};
-use bridge_core::{BattleReport, ClaudeConfig, Finding, Severity, Station, Verdict, WorkstreamSpec};
+use bridge_core::{
+    BattleReport, ClaudeConfig, Finding, Severity, Station, Verdict, WorkstreamSpec,
+};
 use bridge_engine::TurnCtx;
 use bridge_engine::runner::ExitClass;
 use bridge_git::WorktreeHandle;
@@ -65,8 +67,16 @@ impl KobayashiRunner {
         let branch = ws.branch_name(mission_slug);
         let provisioned =
             engineering::provision_throwaway(deps, deps, claude_cfg, helper_path, ws.id, &branch)?;
-        let result =
-            Self::attack(deps, claude_cfg, &provisioned, ws, impl_worktree, &branch, round).await;
+        let result = Self::attack(
+            deps,
+            claude_cfg,
+            &provisioned,
+            ws,
+            impl_worktree,
+            &branch,
+            round,
+        )
+        .await;
         // The throwaway is always decommissioned, even when the round failed.
         engineering::decommission(deps, deps, ws.id, &provisioned, false);
         result
@@ -99,8 +109,14 @@ impl KobayashiRunner {
             // Fresh session every round: no memory of prior attempts.
             resume: None,
             max_turns: KOBAYASHI_MAX_TURNS,
-            allowed_tools: KOBAYASHI_ALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect(),
-            disallowed_tools: KOBAYASHI_DISALLOWED_TOOLS.iter().map(|s| (*s).to_string()).collect(),
+            allowed_tools: KOBAYASHI_ALLOWED_TOOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            disallowed_tools: KOBAYASHI_DISALLOWED_TOOLS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
             model: Some(claude_cfg.kobayashi_model.clone()),
             json_schema: Some(BattleReport::json_schema()),
             mcp_config: None,
@@ -135,7 +151,12 @@ impl KobayashiRunner {
                     format!(
                         " (result subtype {}, text: {})",
                         r.subtype,
-                        r.result.as_deref().unwrap_or("<none>").chars().take(300).collect::<String>()
+                        r.result
+                            .as_deref()
+                            .unwrap_or("<none>")
+                            .chars()
+                            .take(300)
+                            .collect::<String>()
                     )
                 })
                 .unwrap_or_default();
@@ -156,7 +177,12 @@ impl KobayashiRunner {
         let structured = outcome
             .structured_output
             .clone()
-            .or_else(|| outcome.result.as_ref().and_then(|r| r.structured_output.clone()))
+            .or_else(|| {
+                outcome
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.structured_output.clone())
+            })
             .ok_or(KobayashiError::NoReport)?;
         let mut report = BattleReport::from_model_output(&structured, ws.id, round)
             .map_err(|_| KobayashiError::NoReport)?;
@@ -322,11 +348,22 @@ mod tests {
     async fn no_commits_means_no_cherry_pick() {
         let deps = MockDeps::new();
         let ws = spec("ws-a");
-        KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 1)
-            .await
-            .unwrap();
+        KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            1,
+        )
+        .await
+        .unwrap();
         assert!(
-            !deps.git_log().iter().any(|c| matches!(c, GitCall::CherryPick { .. })),
+            !deps
+                .git_log()
+                .iter()
+                .any(|c| matches!(c, GitCall::CherryPick { .. })),
             "no commits ahead -> no cherry-pick"
         );
     }
@@ -343,9 +380,17 @@ mod tests {
             weakness_class: "path-traversal".into(),
         });
         let ws = spec("ws-a");
-        KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 2)
-            .await
-            .unwrap();
+        KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            2,
+        )
+        .await
+        .unwrap();
         let turns = deps.turn_log();
         assert!(turns[0].inv.prompt.contains("old wound"));
         assert!(turns[0].inv.prompt.contains("path-traversal"));
@@ -364,14 +409,24 @@ mod tests {
             TurnResponse::structured(serde_json::json!({ "verdict": "breached", "findings": [] })),
         );
         let ws = spec("ws-a");
-        let report =
-            KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 1)
-                .await
-                .unwrap();
+        let report = KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            1,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.verdict, Verdict::Breached);
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].weakness_class, "inconsistent-report");
-        assert!(report.is_consistent(), "converted report must be consistent");
+        assert!(
+            report.is_consistent(),
+            "converted report must be consistent"
+        );
         // The recorded copy is the converted one.
         assert_eq!(deps.recorded_reports.lock().unwrap()[0].0, report);
     }
@@ -393,12 +448,23 @@ mod tests {
             })),
         );
         let ws = spec("ws-a");
-        let report =
-            KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 1)
-                .await
-                .unwrap();
+        let report = KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            1,
+        )
+        .await
+        .unwrap();
         assert_eq!(report.verdict, Verdict::Breached);
-        assert_eq!(report.findings.len(), 2, "original finding kept + synthetic added");
+        assert_eq!(
+            report.findings.len(),
+            2,
+            "original finding kept + synthetic added"
+        );
     }
 
     #[tokio::test]
@@ -406,13 +472,23 @@ mod tests {
         let deps = MockDeps::new();
         deps.push_turn(Station::KobayashiMaru, TurnResponse::Err("boom".into()));
         let ws = spec("ws-a");
-        let err =
-            KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 1)
-                .await
-                .unwrap_err();
+        let err = KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            1,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, KobayashiError::Turn(_)), "got {err:?}");
         assert_eq!(deps.disarmed.lock().unwrap().as_slice(), &[ws.id]);
-        assert!(throwaway_removed(&deps), "throwaway must be decommissioned on error");
+        assert!(
+            throwaway_removed(&deps),
+            "throwaway must be decommissioned on error"
+        );
         assert!(deps.recorded_reports.lock().unwrap().is_empty());
     }
 
@@ -421,10 +497,17 @@ mod tests {
         let deps = MockDeps::new();
         deps.push_turn(Station::KobayashiMaru, TurnResponse::ok());
         let ws = spec("ws-a");
-        let err =
-            KobayashiRunner::run_round(&*deps, &cfg(), &helper(), &ws, "m", &impl_handle(&deps, "m", &ws), 1)
-                .await
-                .unwrap_err();
+        let err = KobayashiRunner::run_round(
+            &*deps,
+            &cfg(),
+            &helper(),
+            &ws,
+            "m",
+            &impl_handle(&deps, "m", &ws),
+            1,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, KobayashiError::NoReport), "got {err:?}");
         assert!(throwaway_removed(&deps));
     }

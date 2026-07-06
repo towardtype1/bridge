@@ -6,8 +6,8 @@
 
 use bridge_core::{
     BattleReport, BridgeConfig, BudgetSnapshot, Finding, HookDecisionRecord, MissionId,
-    MissionPlan, SessionId, Severity, Station, TurnRecord, Verdict, WorkstreamId,
-    WorkstreamStatus, WorkstreamTurns,
+    MissionPlan, SessionId, Severity, Station, TurnRecord, Verdict, WorkstreamId, WorkstreamStatus,
+    WorkstreamTurns,
 };
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
@@ -175,7 +175,9 @@ impl ShipsComputer {
         let _mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
         Self::migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn migrate(conn: &Connection) -> Result<(), ComputerError> {
@@ -198,7 +200,11 @@ impl ShipsComputer {
     /// Insert or replace the mission plan + config snapshot. Re-recording an
     /// existing mission updates the plan and config but preserves the
     /// original start time (the wall-clock anchor) and completion mark.
-    pub fn record_mission(&self, plan: &MissionPlan, config: &BridgeConfig) -> Result<(), ComputerError> {
+    pub fn record_mission(
+        &self,
+        plan: &MissionPlan,
+        config: &BridgeConfig,
+    ) -> Result<(), ComputerError> {
         let plan_json = serde_json::to_string(plan)?;
         let config_json = serde_json::to_string(config)?;
         self.lock().execute(
@@ -212,7 +218,11 @@ impl ShipsComputer {
         Ok(())
     }
 
-    pub fn record_workstream_status(&self, ws: WorkstreamId, status: &WorkstreamStatus) -> Result<(), ComputerError> {
+    pub fn record_workstream_status(
+        &self,
+        ws: WorkstreamId,
+        status: &WorkstreamStatus,
+    ) -> Result<(), ComputerError> {
         let status_json = serde_json::to_string(status)?;
         self.lock().execute(
             "INSERT INTO workstream_statuses (workstream_id, status_json, recorded_at_ms)
@@ -259,14 +269,19 @@ impl ShipsComputer {
              LIMIT 1",
         )?;
         for ws in &plan.workstreams {
-            let latest: Option<String> =
-                stmt.query_row([ws.id.to_string()], |r| r.get(0)).optional()?;
+            let latest: Option<String> = stmt
+                .query_row([ws.id.to_string()], |r| r.get(0))
+                .optional()?;
             if let Some(json) = latest {
                 statuses.push((ws.id, serde_json::from_str(&json)?));
             }
         }
         drop(stmt);
-        Ok(Some(PersistedMission { plan, statuses, config }))
+        Ok(Some(PersistedMission {
+            plan,
+            statuses,
+            config,
+        }))
     }
 
     // -- turns, usage, decisions ----------------------------------------------
@@ -290,7 +305,11 @@ impl ShipsComputer {
         Ok(())
     }
 
-    pub fn record_hook_decision(&self, mission: MissionId, d: &HookDecisionRecord) -> Result<(), ComputerError> {
+    pub fn record_hook_decision(
+        &self,
+        mission: MissionId,
+        d: &HookDecisionRecord,
+    ) -> Result<(), ComputerError> {
         let decision_json = serde_json::to_string(d)?;
         self.lock().execute(
             "INSERT INTO hook_decisions
@@ -311,7 +330,11 @@ impl ShipsComputer {
     /// Turn totals sum the CLI-reported `num_turns` of each invocation; the
     /// wall clock runs from `record_mission` time to now. Errors if the
     /// mission was never recorded.
-    pub fn usage_snapshot(&self, mission: MissionId, cfg: &BridgeConfig) -> Result<BudgetSnapshot, ComputerError> {
+    pub fn usage_snapshot(
+        &self,
+        mission: MissionId,
+        cfg: &BridgeConfig,
+    ) -> Result<BudgetSnapshot, ComputerError> {
         let conn = self.lock();
         let started_at_ms: i64 = conn.query_row(
             "SELECT started_at_ms FROM missions WHERE mission_id = ?1",
@@ -339,7 +362,10 @@ impl ShipsComputer {
             let (ws_str, turns) = row?;
             match ws_str.parse::<WorkstreamId>() {
                 Ok(workstream) => {
-                    per_workstream.push(WorkstreamTurns { workstream, turns: clamp_u32(turns) });
+                    per_workstream.push(WorkstreamTurns {
+                        workstream,
+                        turns: clamp_u32(turns),
+                    });
                 }
                 Err(err) => {
                     tracing::warn!("skipping malformed workstream id {ws_str:?} in turns: {err}");
@@ -362,7 +388,10 @@ impl ShipsComputer {
     /// Turn counts per station for the GUI header: sums the CLI-reported
     /// `num_turns` per station, returned in `Station::ALL` order for the
     /// stations that have any turns.
-    pub fn turns_by_station(&self, mission: MissionId) -> Result<Vec<(Station, u32)>, ComputerError> {
+    pub fn turns_by_station(
+        &self,
+        mission: MissionId,
+    ) -> Result<Vec<(Station, u32)>, ComputerError> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT station, SUM(num_turns) FROM turns WHERE mission_id = ?1 GROUP BY station",
@@ -393,7 +422,13 @@ impl ShipsComputer {
 
     /// Persist the claude session for (workstream, station) with the cwd it
     /// must be resumed from. Upsert.
-    pub fn record_session(&self, ws: WorkstreamId, station: Station, session: &SessionId, cwd: &Path) -> Result<(), ComputerError> {
+    pub fn record_session(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+        session: &SessionId,
+        cwd: &Path,
+    ) -> Result<(), ComputerError> {
         self.lock().execute(
             "INSERT INTO sessions (workstream_id, station, session_id, cwd, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -401,12 +436,22 @@ impl ShipsComputer {
                  session_id = excluded.session_id,
                  cwd = excluded.cwd,
                  updated_at_ms = excluded.updated_at_ms",
-            params![ws.to_string(), station.as_str(), session.0, path_str(cwd), now_ms()],
+            params![
+                ws.to_string(),
+                station.as_str(),
+                session.0,
+                path_str(cwd),
+                now_ms()
+            ],
         )?;
         Ok(())
     }
 
-    pub fn session_for(&self, ws: WorkstreamId, station: Station) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
+    pub fn session_for(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+    ) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
         let found = self
             .lock()
             .query_row(
@@ -427,7 +472,11 @@ impl ShipsComputer {
 
     /// Store a report and index findings by touched file paths extracted
     /// from `files` (caller supplies the diff file list of the workstream).
-    pub fn record_battle_report(&self, report: &BattleReport, files: &[PathBuf]) -> Result<(), ComputerError> {
+    pub fn record_battle_report(
+        &self,
+        report: &BattleReport,
+        files: &[PathBuf],
+    ) -> Result<(), ComputerError> {
         let report_json = serde_json::to_string(report)?;
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -504,7 +553,11 @@ impl ShipsComputer {
 
     // -- child process registry (orphan cleanup) ---------------------------------
 
-    pub fn register_child_pid(&self, pid: u32, workstream: WorkstreamId) -> Result<(), ComputerError> {
+    pub fn register_child_pid(
+        &self,
+        pid: u32,
+        workstream: WorkstreamId,
+    ) -> Result<(), ComputerError> {
         self.lock().execute(
             "INSERT INTO child_pids (pid, workstream_id, registered_at_ms)
              VALUES (?1, ?2, ?3)
@@ -517,7 +570,10 @@ impl ShipsComputer {
     }
 
     pub fn clear_child_pid(&self, pid: u32) -> Result<(), ComputerError> {
-        self.lock().execute("DELETE FROM child_pids WHERE pid = ?1", params![i64::from(pid)])?;
+        self.lock().execute(
+            "DELETE FROM child_pids WHERE pid = ?1",
+            params![i64::from(pid)],
+        )?;
         Ok(())
     }
 

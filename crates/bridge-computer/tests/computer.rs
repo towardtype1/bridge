@@ -2,12 +2,12 @@
 //! API only. Every record/query method is covered, plus migration
 //! idempotence and persistence across close/reopen.
 
+use bridge_computer::{ComputerError, ShipsComputer};
 use bridge_core::{
     BattleReport, BridgeConfig, DecisionKind, DecisionSource, Finding, HookDecisionRecord,
     MissionId, MissionPlan, OrderId, SessionId, Severity, Station, TurnRecord, Verdict,
     WorkstreamId, WorkstreamSpec, WorkstreamStatus,
 };
-use bridge_computer::{ComputerError, ShipsComputer};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 
@@ -59,8 +59,17 @@ fn finding(title: &str, weakness_class: &str) -> Finding {
 }
 
 fn report(ws: WorkstreamId, round: u32, findings: Vec<Finding>) -> BattleReport {
-    let verdict = if findings.is_empty() { Verdict::Clean } else { Verdict::Breached };
-    BattleReport { workstream: ws, round, verdict, findings }
+    let verdict = if findings.is_empty() {
+        Verdict::Clean
+    } else {
+        Verdict::Breached
+    };
+    BattleReport {
+        workstream: ws,
+        round,
+        verdict,
+        findings,
+    }
 }
 
 fn decision(ws: WorkstreamId) -> HookDecisionRecord {
@@ -103,7 +112,9 @@ fn file_database_uses_wal_mode() {
 
     // WAL is persistent in the database file, so a raw reopen observes it.
     let raw = rusqlite::Connection::open(&path).unwrap();
-    let mode: String = raw.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+    let mode: String = raw
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(mode.to_lowercase(), "wal");
 }
 
@@ -118,17 +129,26 @@ fn mission_round_trips_with_latest_statuses() {
     let ws1 = plan.workstreams[1].id;
 
     db.record_mission(&plan, &cfg).unwrap();
-    db.record_workstream_status(ws1, &WorkstreamStatus::Working).unwrap();
-    db.record_workstream_status(ws0, &WorkstreamStatus::Working).unwrap();
-    db.record_workstream_status(ws0, &WorkstreamStatus::ReadyToMerge).unwrap();
+    db.record_workstream_status(ws1, &WorkstreamStatus::Working)
+        .unwrap();
+    db.record_workstream_status(ws0, &WorkstreamStatus::Working)
+        .unwrap();
+    db.record_workstream_status(ws0, &WorkstreamStatus::ReadyToMerge)
+        .unwrap();
 
-    let persisted = db.persisted_mission().unwrap().expect("mission should be offered");
+    let persisted = db
+        .persisted_mission()
+        .unwrap()
+        .expect("mission should be offered");
     assert_eq!(persisted.plan, plan);
     assert_eq!(persisted.config, cfg);
     // Latest status per workstream, in plan declaration order.
     assert_eq!(
         persisted.statuses,
-        vec![(ws0, WorkstreamStatus::ReadyToMerge), (ws1, WorkstreamStatus::Working)]
+        vec![
+            (ws0, WorkstreamStatus::ReadyToMerge),
+            (ws1, WorkstreamStatus::Working)
+        ]
     );
 }
 
@@ -137,10 +157,14 @@ fn workstreams_without_recorded_status_are_omitted() {
     let db = ShipsComputer::open_in_memory().unwrap();
     let plan = plan_with(2);
     db.record_mission(&plan, &BridgeConfig::default()).unwrap();
-    db.record_workstream_status(plan.workstreams[1].id, &WorkstreamStatus::Pending).unwrap();
+    db.record_workstream_status(plan.workstreams[1].id, &WorkstreamStatus::Pending)
+        .unwrap();
 
     let persisted = db.persisted_mission().unwrap().unwrap();
-    assert_eq!(persisted.statuses, vec![(plan.workstreams[1].id, WorkstreamStatus::Pending)]);
+    assert_eq!(
+        persisted.statuses,
+        vec![(plan.workstreams[1].id, WorkstreamStatus::Pending)]
+    );
 }
 
 #[test]
@@ -205,9 +229,12 @@ fn usage_snapshot_accumulates_recorded_turns() {
     let ws1 = plan.workstreams[1].id;
     db.record_mission(&plan, &cfg).unwrap();
 
-    db.record_turn(mission, &turn(ws1, Station::Helm, 3, Some(0.50))).unwrap();
-    db.record_turn(mission, &turn(ws1, Station::Helm, 2, None)).unwrap();
-    db.record_turn(mission, &turn(ws0, Station::KobayashiMaru, 4, Some(1.25))).unwrap();
+    db.record_turn(mission, &turn(ws1, Station::Helm, 3, Some(0.50)))
+        .unwrap();
+    db.record_turn(mission, &turn(ws1, Station::Helm, 2, None))
+        .unwrap();
+    db.record_turn(mission, &turn(ws0, Station::KobayashiMaru, 4, Some(1.25)))
+        .unwrap();
 
     let snap = db.usage_snapshot(mission, &cfg).unwrap();
     assert_eq!(snap.mission, mission);
@@ -216,7 +243,11 @@ fn usage_snapshot_accumulates_recorded_turns() {
     assert!((snap.total_cost_usd - 1.75).abs() < 1e-9);
     assert_eq!(snap.max_wall_clock_secs, cfg.budgets.max_wall_clock_secs);
     // Wall clock is measured from record_mission time to now: small and non-negative.
-    assert!(snap.wall_clock_secs < 60, "wall clock should be tiny, got {}", snap.wall_clock_secs);
+    assert!(
+        snap.wall_clock_secs < 60,
+        "wall clock should be tiny, got {}",
+        snap.wall_clock_secs
+    );
 
     // Per-workstream totals, in first-turn-recorded order.
     assert_eq!(snap.per_workstream.len(), 2);
@@ -254,14 +285,21 @@ fn turns_by_station_sums_cli_reported_turns() {
     let ws = plan.workstreams[0].id;
     db.record_mission(&plan, &BridgeConfig::default()).unwrap();
 
-    db.record_turn(mission, &turn(ws, Station::Helm, 3, None)).unwrap();
-    db.record_turn(mission, &turn(ws, Station::Helm, 2, None)).unwrap();
-    db.record_turn(mission, &turn(ws, Station::KobayashiMaru, 7, None)).unwrap();
+    db.record_turn(mission, &turn(ws, Station::Helm, 3, None))
+        .unwrap();
+    db.record_turn(mission, &turn(ws, Station::Helm, 2, None))
+        .unwrap();
+    db.record_turn(mission, &turn(ws, Station::KobayashiMaru, 7, None))
+        .unwrap();
     // A turn on another mission must not leak in.
-    db.record_turn(MissionId::new(), &turn(ws, Station::Helm, 100, None)).unwrap();
+    db.record_turn(MissionId::new(), &turn(ws, Station::Helm, 100, None))
+        .unwrap();
 
     let by_station = db.turns_by_station(mission).unwrap();
-    assert_eq!(by_station, vec![(Station::Helm, 5), (Station::KobayashiMaru, 7)]);
+    assert_eq!(
+        by_station,
+        vec![(Station::Helm, 5), (Station::KobayashiMaru, 7)]
+    );
 }
 
 #[test]
@@ -295,16 +333,26 @@ fn session_round_trips_and_upserts() {
 
     assert_eq!(db.session_for(ws, Station::Helm).unwrap(), None);
 
-    db.record_session(ws, Station::Helm, &SessionId::from("sess-a"), Path::new("/tmp/wt-a"))
-        .unwrap();
+    db.record_session(
+        ws,
+        Station::Helm,
+        &SessionId::from("sess-a"),
+        Path::new("/tmp/wt-a"),
+    )
+    .unwrap();
     assert_eq!(
         db.session_for(ws, Station::Helm).unwrap(),
         Some((SessionId::from("sess-a"), PathBuf::from("/tmp/wt-a")))
     );
 
     // Upsert: same (workstream, station) key replaces both session and cwd.
-    db.record_session(ws, Station::Helm, &SessionId::from("sess-b"), Path::new("/tmp/wt-b"))
-        .unwrap();
+    db.record_session(
+        ws,
+        Station::Helm,
+        &SessionId::from("sess-b"),
+        Path::new("/tmp/wt-b"),
+    )
+    .unwrap();
     assert_eq!(
         db.session_for(ws, Station::Helm).unwrap(),
         Some((SessionId::from("sess-b"), PathBuf::from("/tmp/wt-b")))
@@ -325,12 +373,14 @@ fn findings_are_indexed_by_files_and_returned_newest_report_first() {
 
     let f1 = finding("first-round finding", "path-traversal");
     let r1 = report(ws, 1, vec![f1.clone()]);
-    db.record_battle_report(&r1, &[a.clone(), b.clone()]).unwrap();
+    db.record_battle_report(&r1, &[a.clone(), b.clone()])
+        .unwrap();
 
     let f2 = finding("second-round finding A", "race-condition");
     let f3 = finding("second-round finding B", "unvalidated-external-content");
     let r2 = report(ws, 2, vec![f2.clone(), f3.clone()]);
-    db.record_battle_report(&r2, std::slice::from_ref(&b)).unwrap();
+    db.record_battle_report(&r2, std::slice::from_ref(&b))
+        .unwrap();
 
     // b.rs intersects both reports: newest report first, findings in report order.
     let hits = db.findings_for_files(std::slice::from_ref(&b)).unwrap();
@@ -350,9 +400,14 @@ fn disjoint_files_return_no_findings() {
     let db = ShipsComputer::open_in_memory().unwrap();
     let ws = WorkstreamId::new();
     let r = report(ws, 1, vec![finding("f", "misc")]);
-    db.record_battle_report(&r, &[PathBuf::from("src/a.rs")]).unwrap();
+    db.record_battle_report(&r, &[PathBuf::from("src/a.rs")])
+        .unwrap();
 
-    assert_eq!(db.findings_for_files(&[PathBuf::from("src/other.rs")]).unwrap(), vec![]);
+    assert_eq!(
+        db.findings_for_files(&[PathBuf::from("src/other.rs")])
+            .unwrap(),
+        vec![]
+    );
     assert_eq!(db.findings_for_files(&[]).unwrap(), vec![]);
 }
 
@@ -360,8 +415,12 @@ fn disjoint_files_return_no_findings() {
 fn clean_report_with_no_findings_is_recorded_without_error() {
     let db = ShipsComputer::open_in_memory().unwrap();
     let r = report(WorkstreamId::new(), 1, vec![]);
-    db.record_battle_report(&r, &[PathBuf::from("src/a.rs")]).unwrap();
-    assert_eq!(db.findings_for_files(&[PathBuf::from("src/a.rs")]).unwrap(), vec![]);
+    db.record_battle_report(&r, &[PathBuf::from("src/a.rs")])
+        .unwrap();
+    assert_eq!(
+        db.findings_for_files(&[PathBuf::from("src/a.rs")]).unwrap(),
+        vec![]
+    );
 }
 
 #[test]
@@ -370,7 +429,8 @@ fn duplicate_file_entries_are_tolerated() {
     let ws = WorkstreamId::new();
     let a = PathBuf::from("src/a.rs");
     let f = finding("f", "misc");
-    db.record_battle_report(&report(ws, 1, vec![f.clone()]), &[a.clone(), a.clone()]).unwrap();
+    db.record_battle_report(&report(ws, 1, vec![f.clone()]), &[a.clone(), a.clone()])
+        .unwrap();
     assert_eq!(db.findings_for_files(&[a.clone(), a]).unwrap(), vec![f]);
 }
 
@@ -414,12 +474,22 @@ fn everything_persists_across_close_and_reopen() {
     {
         let db = ShipsComputer::open(&path).unwrap();
         db.record_mission(&plan, &cfg).unwrap();
-        db.record_workstream_status(ws, &WorkstreamStatus::Working).unwrap();
-        db.record_turn(mission, &turn(ws, Station::Helm, 2, Some(0.25))).unwrap();
-        db.record_session(ws, Station::Helm, &SessionId::from("sess-x"), Path::new("/tmp/wt"))
+        db.record_workstream_status(ws, &WorkstreamStatus::Working)
             .unwrap();
-        db.record_battle_report(&report(ws, 1, vec![f.clone()]), &[PathBuf::from("src/a.rs")])
+        db.record_turn(mission, &turn(ws, Station::Helm, 2, Some(0.25)))
             .unwrap();
+        db.record_session(
+            ws,
+            Station::Helm,
+            &SessionId::from("sess-x"),
+            Path::new("/tmp/wt"),
+        )
+        .unwrap();
+        db.record_battle_report(
+            &report(ws, 1, vec![f.clone()]),
+            &[PathBuf::from("src/a.rs")],
+        )
+        .unwrap();
         db.register_child_pid(555, ws).unwrap();
     }
 
@@ -437,6 +507,9 @@ fn everything_persists_across_close_and_reopen() {
         db.session_for(ws, Station::Helm).unwrap(),
         Some((SessionId::from("sess-x"), PathBuf::from("/tmp/wt")))
     );
-    assert_eq!(db.findings_for_files(&[PathBuf::from("src/a.rs")]).unwrap(), vec![f]);
+    assert_eq!(
+        db.findings_for_files(&[PathBuf::from("src/a.rs")]).unwrap(),
+        vec![f]
+    );
     assert_eq!(db.recorded_child_pids().unwrap(), vec![555]);
 }

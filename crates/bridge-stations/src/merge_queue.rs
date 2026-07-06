@@ -59,7 +59,10 @@ impl MergeQueue {
 
     fn topo_index(&self, ws: WorkstreamId) -> usize {
         // Unknown workstreams (not in the plan topology) sort last.
-        self.topo.iter().position(|&t| t == ws).unwrap_or(usize::MAX)
+        self.topo
+            .iter()
+            .position(|&t| t == ws)
+            .unwrap_or(usize::MAX)
     }
 
     /// Workstream finished testing clean; join the queue with the current
@@ -148,9 +151,12 @@ impl MergeQueue {
     /// (the serialization lock).
     pub fn busy(&self) -> bool {
         use MergeQueueState::*;
-        self.entries
-            .values()
-            .any(|e| matches!(e.state, Rebasing | ConflictFix | ChecksRunning | AwaitingConfirmation | Merging))
+        self.entries.values().any(|e| {
+            matches!(
+                e.state,
+                Rebasing | ConflictFix | ChecksRunning | AwaitingConfirmation | Merging
+            )
+        })
     }
 }
 
@@ -247,7 +253,10 @@ mod tests {
             snap.iter().map(|e| e.workstream).collect::<Vec<_>>(),
             vec![topo[0], topo[1], topo[2]]
         );
-        assert_eq!(snap.iter().map(|e| e.position).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            snap.iter().map(|e| e.position).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         assert_eq!(snap[0].branch, "b-a");
         assert!(snap.iter().all(|e| e.state == AwaitingRebase));
     }
@@ -311,7 +320,10 @@ mod tests {
             (AwaitingConfirmation, AwaitingRebase),
             (Rebasing, Rebasing),
         ] {
-            assert!(!transition_is_legal(from, to), "{from:?} -> {to:?} must be illegal");
+            assert!(
+                !transition_is_legal(from, to),
+                "{from:?} -> {to:?} must be illegal"
+            );
         }
     }
 }

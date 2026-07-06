@@ -155,10 +155,7 @@ where
     }
 
     /// Run a blocking git/engineering closure on the blocking pool.
-    async fn blocking<R: Send + 'static>(
-        &self,
-        f: impl FnOnce(&D) -> R + Send + 'static,
-    ) -> R {
+    async fn blocking<R: Send + 'static>(&self, f: impl FnOnce(&D) -> R + Send + 'static) -> R {
         let deps = self.deps.clone();
         tokio::task::spawn_blocking(move || f(&deps))
             .await
@@ -387,17 +384,18 @@ where
     /// Decommission all still-provisioned workstream worktrees. Best-effort:
     /// engineering::decommission logs rather than propagates.
     async fn decommission_all(&mut self) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         let keep_on_failure = self.shared.config.worktrees.keep_on_failure;
-        let jobs: Vec<(WorkstreamId, ProvisionedWorktree, bool)> = m
-            .ws
-            .iter_mut()
-            .filter_map(|(id, w)| {
-                let provisioned = w.provisioned.take()?;
-                let merged = matches!(w.status, WorkstreamStatus::Merged);
-                Some((*id, provisioned, !merged && keep_on_failure))
-            })
-            .collect();
+        let jobs: Vec<(WorkstreamId, ProvisionedWorktree, bool)> =
+            m.ws.iter_mut()
+                .filter_map(|(id, w)| {
+                    let provisioned = w.provisioned.take()?;
+                    let merged = matches!(w.status, WorkstreamStatus::Merged);
+                    Some((*id, provisioned, !merged && keep_on_failure))
+                })
+                .collect();
         for (ws, provisioned, keep) in jobs {
             self.shared
                 .blocking(move |d| engineering::decommission(d, d, ws, &provisioned, keep))
@@ -411,9 +409,10 @@ where
             BridgeCommand::ResolveEscalation { id, decision } => {
                 self.resolve_escalation(id, decision).await
             }
-            BridgeCommand::ConfirmMerge { workstream, approved } => {
-                self.confirm_merge(workstream, approved).await
-            }
+            BridgeCommand::ConfirmMerge {
+                workstream,
+                approved,
+            } => self.confirm_merge(workstream, approved).await,
             BridgeCommand::SetRedAlert(active) => {
                 self.shared.deps.set_red_alert(active);
                 self.shared.emit(BridgeEvent::RedAlert { active });
@@ -422,11 +421,12 @@ where
             BridgeCommand::WindDown => {
                 self.winding_down = true;
                 if let Some(m) = self.mission.as_ref() {
-                    self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-                        mission: m.plan.mission_id,
-                        state: MissionState::WindingDown,
-                        detail: None,
-                    }));
+                    self.shared
+                        .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                            mission: m.plan.mission_id,
+                            state: MissionState::WindingDown,
+                            detail: None,
+                        }));
                 }
                 self.maybe_finish();
             }
@@ -443,19 +443,30 @@ where
     async fn handle_internal(&mut self, msg: Internal) {
         match msg {
             Internal::CaptainDone { result } => self.captain_done(result).await,
-            Internal::TurnDone { ws, purpose, order_id, started_at, result } => {
-                self.turn_done(ws, purpose, order_id, started_at, result).await
+            Internal::TurnDone {
+                ws,
+                purpose,
+                order_id,
+                started_at,
+                result,
+            } => {
+                self.turn_done(ws, purpose, order_id, started_at, result)
+                    .await
             }
             Internal::KobayashiDone { ws, round, result } => {
                 self.kobayashi_done(ws, round, result).await
             }
-            Internal::RebaseDone { ws, in_queue, result } => {
-                self.rebase_done(ws, in_queue, result).await
-            }
+            Internal::RebaseDone {
+                ws,
+                in_queue,
+                result,
+            } => self.rebase_done(ws, in_queue, result).await,
             Internal::MergeDone { ws, result } => self.merge_done(ws, result).await,
-            Internal::CommsDone { order_id, started_at, result } => {
-                self.comms_done(order_id, started_at, result).await
-            }
+            Internal::CommsDone {
+                order_id,
+                started_at,
+                result,
+            } => self.comms_done(order_id, started_at, result).await,
             Internal::DispatchComms => self.dispatch_now(Dispatch::Comms).await,
             Internal::RateLimitProbe => self.rate_limit_probe().await,
             Internal::EscalationTimeout { id } => self.escalation_timeout(id).await,
@@ -474,7 +485,9 @@ where
             tracing::warn!("screening escalation {id} timed out; denying (fail closed)");
             self.resolve_escalation(
                 id,
-                UserDecision::Deny { reason: "screening escalation timed out".into() },
+                UserDecision::Deny {
+                    reason: "screening escalation timed out".into(),
+                },
             )
             .await;
         }
@@ -490,11 +503,12 @@ where
         let mission_id = MissionId::new();
         let slug = slugify(&objective);
         let captain_ws = WorkstreamId(mission_id.0);
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: mission_id,
-            state: MissionState::Planning,
-            detail: Some(objective.clone()),
-        }));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: mission_id,
+                state: MissionState::Planning,
+                detail: Some(objective.clone()),
+            }));
 
         let main = self
             .shared
@@ -557,17 +571,17 @@ where
                 return;
             }
         };
-        if outcome.exit != ExitClass::Success
-            || outcome.result.as_ref().is_some_and(|r| r.is_error)
+        if outcome.exit != ExitClass::Success || outcome.result.as_ref().is_some_and(|r| r.is_error)
         {
             self.fail_planning(&p, "captain turn did not succeed".into());
             return;
         }
-        let Some(structured) = outcome
-            .structured_output
-            .clone()
-            .or_else(|| outcome.result.as_ref().and_then(|r| r.structured_output.clone()))
-        else {
+        let Some(structured) = outcome.structured_output.clone().or_else(|| {
+            outcome
+                .result
+                .as_ref()
+                .and_then(|r| r.structured_output.clone())
+        }) else {
             self.fail_planning(&p, "captain produced no structured plan".into());
             return;
         };
@@ -583,24 +597,28 @@ where
             .blocking(|d| d.main_branch())
             .await
             .unwrap_or_else(|_| "main".into());
-        let plan = match MissionPlan::from_draft(draft, p.mission_id, &p.slug, &p.objective, &base_ref)
-        {
-            Ok(plan) => plan,
-            Err(e) => {
-                self.fail_planning(&p, format!("invalid plan: {e}"));
-                return;
-            }
-        };
-        self.begin_mission(plan, Some((p.order_id, p.started_at, outcome))).await;
+        let plan =
+            match MissionPlan::from_draft(draft, p.mission_id, &p.slug, &p.objective, &base_ref) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    self.fail_planning(&p, format!("invalid plan: {e}"));
+                    return;
+                }
+            };
+        self.begin_mission(plan, Some((p.order_id, p.started_at, outcome)))
+            .await;
     }
 
     fn fail_planning(&mut self, p: &Planning, reason: String) {
         tracing::error!("planning failed: {reason}");
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: p.mission_id,
-            state: MissionState::Failed { reason: reason.clone() },
-            detail: None,
-        }));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: p.mission_id,
+                state: MissionState::Failed {
+                    reason: reason.clone(),
+                },
+                detail: None,
+            }));
         self.exit = Some(Err(MissionError::Planning(reason)));
     }
 
@@ -667,11 +685,12 @@ where
         if let Some((order_id, started_at, outcome)) = captain_turn {
             self.record_turn_outcome(captain_ws, Station::Captain, order_id, started_at, &outcome);
         }
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: mission_id,
-            state: MissionState::Executing,
-            detail: None,
-        }));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: mission_id,
+                state: MissionState::Executing,
+                detail: None,
+            }));
         // Announce the initial Pending status explicitly (set_status only
         // reports changes, and workstreams are born Pending).
         let ids: Vec<WorkstreamId> = self.mission.as_ref().unwrap().order.clone();
@@ -683,8 +702,10 @@ where
             {
                 tracing::warn!("failed to record workstream status: {e}");
             }
-            self.shared
-                .emit(BridgeEvent::WorkstreamStatus { id, status: WorkstreamStatus::Pending });
+            self.shared.emit(BridgeEvent::WorkstreamStatus {
+                id,
+                status: WorkstreamStatus::Pending,
+            });
         }
         self.start_eligible().await;
     }
@@ -697,7 +718,9 @@ where
         if !self.winding_down {
             loop {
                 let (to_fail, to_start) = {
-                    let Some(m) = self.mission.as_ref() else { return };
+                    let Some(m) = self.mission.as_ref() else {
+                        return;
+                    };
                     let mut to_fail = Vec::new();
                     let mut to_start = Vec::new();
                     for &id in &m.order {
@@ -731,7 +754,9 @@ where
                     }
                     self.set_status(
                         id,
-                        WorkstreamStatus::Failed { reason: "a dependency failed".into() },
+                        WorkstreamStatus::Failed {
+                            reason: "a dependency failed".into(),
+                        },
                     );
                 }
                 for id in to_start {
@@ -744,7 +769,9 @@ where
 
     async fn start_workstream(&mut self, id: WorkstreamId) {
         let (spec, objective) = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             let Some(w) = m.ws.get_mut(&id) else { return };
             w.started = true;
             (w.spec.clone(), m.plan.objective.clone())
@@ -755,7 +782,11 @@ where
         order.allowed_tools = profile.allowed_tools.clone();
         order.disallowed_tools = profile.disallowed_tools.clone();
         self.screen_and_dispatch(
-            Dispatch::Helm { ws: id, purpose: TurnPurpose::Work, order },
+            Dispatch::Helm {
+                ws: id,
+                purpose: TurnPurpose::Work,
+                order,
+            },
             &profile.allowed_tools,
         )
         .await;
@@ -797,7 +828,9 @@ where
                 };
                 let id = ticket.id;
                 {
-                    let Some(m) = self.mission.as_mut() else { return };
+                    let Some(m) = self.mission.as_mut() else {
+                        return;
+                    };
                     m.escalations.insert(id, (ticket.clone(), dispatch));
                 }
                 self.shared.emit(BridgeEvent::EscalationRequested(ticket));
@@ -822,7 +855,9 @@ where
             return;
         }
         {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             if m.paused.is_some() {
                 m.pending.push_back(dispatch);
                 return;
@@ -853,11 +888,12 @@ where
                 m.pending.push_back(dispatch);
                 m.plan.mission_id
             };
-            self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-                mission: mission_id,
-                state: MissionState::Paused { reason },
-                detail: None,
-            }));
+            self.shared
+                .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                    mission: mission_id,
+                    state: MissionState::Paused { reason },
+                    detail: None,
+                }));
             return;
         }
         self.dispatch_now(dispatch).await;
@@ -912,7 +948,9 @@ where
                 Err(e) => {
                     self.set_status(
                         ws,
-                        WorkstreamStatus::Failed { reason: format!("provisioning failed: {e}") },
+                        WorkstreamStatus::Failed {
+                            reason: format!("provisioning failed: {e}"),
+                        },
                     );
                     self.maybe_finish();
                     return;
@@ -923,11 +961,18 @@ where
             self.set_status(ws, WorkstreamStatus::Working);
         }
         let (cwd, resume) = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             let Some(w) = m.ws.get_mut(&ws) else { return };
             w.busy = true;
             (
-                w.provisioned.as_ref().expect("provisioned above").handle.path.clone(),
+                w.provisioned
+                    .as_ref()
+                    .expect("provisioned above")
+                    .handle
+                    .path
+                    .clone(),
                 w.helm_session.clone(),
             )
         };
@@ -959,20 +1004,30 @@ where
         self.shared.spawn(async move {
             let result = deps.run_turn(inv, ctx).await;
             let _ = tx
-                .send(Internal::TurnDone { ws, purpose, order_id, started_at, result })
+                .send(Internal::TurnDone {
+                    ws,
+                    purpose,
+                    order_id,
+                    started_at,
+                    result,
+                })
                 .await;
         });
     }
 
     async fn dispatch_kobayashi(&mut self, ws: WorkstreamId, round: u32) {
         let (spec, slug, merge_gate, impl_handle) = {
-            let Some(m) = self.mission.as_ref() else { return };
+            let Some(m) = self.mission.as_ref() else {
+                return;
+            };
             let Some(w) = m.ws.get(&ws) else { return };
             let Some(handle) = w.provisioned.as_ref().map(|p| p.handle.clone()) else {
                 // Cannot test what was never provisioned; fail safe.
                 self.set_status(
                     ws,
-                    WorkstreamStatus::Failed { reason: "no provisioned worktree to test".into() },
+                    WorkstreamStatus::Failed {
+                        reason: "no provisioned worktree to test".into(),
+                    },
                 );
                 return;
             };
@@ -997,16 +1052,25 @@ where
         let deps = self.shared.deps.clone();
         let tx = self.shared.internal_tx.clone();
         self.shared.spawn(async move {
-            let result =
-                KobayashiRunner::run_round(&*deps, &cfg, &helper, &spec, &slug, &impl_handle, round)
-                    .await;
+            let result = KobayashiRunner::run_round(
+                &*deps,
+                &cfg,
+                &helper,
+                &spec,
+                &slug,
+                &impl_handle,
+                round,
+            )
+            .await;
             let _ = tx.send(Internal::KobayashiDone { ws, round, result }).await;
         });
     }
 
     async fn dispatch_comms(&mut self) {
         let (plan, summary, captain_ws) = {
-            let Some(m) = self.mission.as_ref() else { return };
+            let Some(m) = self.mission.as_ref() else {
+                return;
+            };
             let summary = m
                 .order
                 .iter()
@@ -1045,7 +1109,13 @@ where
         let tx = self.shared.internal_tx.clone();
         self.shared.spawn(async move {
             let result = deps.run_turn(inv, ctx).await;
-            let _ = tx.send(Internal::CommsDone { order_id, started_at, result }).await;
+            let _ = tx
+                .send(Internal::CommsDone {
+                    order_id,
+                    started_at,
+                    result,
+                })
+                .await;
         });
     }
 
@@ -1069,7 +1139,9 @@ where
             Err(e) => {
                 self.set_status(
                     ws,
-                    WorkstreamStatus::Failed { reason: format!("helm turn failed: {e}") },
+                    WorkstreamStatus::Failed {
+                        reason: format!("helm turn failed: {e}"),
+                    },
                 );
                 self.abandon_queue_entry(ws).await;
                 self.start_eligible().await;
@@ -1094,7 +1166,10 @@ where
                 w.helm_session = Some(session.clone());
             }
             if let Some(cwd) = cwd
-                && let Err(e) = self.shared.deps.record_session(ws, Station::Helm, &session, &cwd)
+                && let Err(e) = self
+                    .shared
+                    .deps
+                    .record_session(ws, Station::Helm, &session, &cwd)
             {
                 tracing::warn!("failed to record session: {e}");
             }
@@ -1115,7 +1190,9 @@ where
                 .unwrap_or_else(|| format!("{:?}", outcome.exit));
             self.set_status(
                 ws,
-                WorkstreamStatus::Failed { reason: format!("helm turn ended with {subtype}") },
+                WorkstreamStatus::Failed {
+                    reason: format!("helm turn ended with {subtype}"),
+                },
             );
             self.abandon_queue_entry(ws).await;
             self.start_eligible().await;
@@ -1193,14 +1270,17 @@ where
             Err(e) => {
                 self.set_status(
                     ws,
-                    WorkstreamStatus::Failed { reason: format!("kobayashi round failed: {e}") },
+                    WorkstreamStatus::Failed {
+                        reason: format!("kobayashi round failed: {e}"),
+                    },
                 );
                 self.abandon_queue_entry(ws).await;
                 self.start_eligible().await;
                 return;
             }
         };
-        self.shared.emit(BridgeEvent::BattleReportFiled(report.clone()));
+        self.shared
+            .emit(BridgeEvent::BattleReportFiled(report.clone()));
         let merge_gate = self
             .mission
             .as_ref()
@@ -1254,13 +1334,20 @@ where
                     self.set_status(ws, WorkstreamStatus::Breached { round });
                     let spec = self.mission.as_ref().unwrap().ws[&ws].spec.clone();
                     let profile = station_profile(Station::Helm, &self.shared.config);
-                    let mut order =
-                        Order::new(ws, Station::Helm, prompts::helm_fix(&spec, &report.findings));
+                    let mut order = Order::new(
+                        ws,
+                        Station::Helm,
+                        prompts::helm_fix(&spec, &report.findings),
+                    );
                     order.max_turns = profile.max_turns_default;
                     order.allowed_tools = profile.allowed_tools.clone();
                     order.disallowed_tools = profile.disallowed_tools.clone();
                     self.screen_and_dispatch(
-                        Dispatch::Helm { ws, purpose: TurnPurpose::FixBreach, order },
+                        Dispatch::Helm {
+                            ws,
+                            purpose: TurnPurpose::FixBreach,
+                            order,
+                        },
                         &profile.allowed_tools,
                     )
                     .await;
@@ -1275,7 +1362,9 @@ where
         started_at: DateTime<Utc>,
         result: Result<TurnOutcome, EngineError>,
     ) {
-        let Some(m) = self.mission.as_ref() else { return };
+        let Some(m) = self.mission.as_ref() else {
+            return;
+        };
         let mission_id = m.plan.mission_id;
         let captain_ws = m.captain_ws;
         match result {
@@ -1315,27 +1404,34 @@ where
                 None,
             )
         };
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: mission_id,
-            state,
-            detail,
-        }));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: mission_id,
+                state,
+                detail,
+            }));
         self.exit = Some(Ok(()));
     }
 
     // -- merge queue ----------------------------------------------------------
 
     async fn pump_queue(&mut self) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         if m.queue.busy() {
             return;
         }
-        let Some(ws) = m.queue.next_candidate() else { return };
+        let Some(ws) = m.queue.next_candidate() else {
+            return;
+        };
         let Some(handle) = m.ws[&ws].provisioned.as_ref().map(|p| p.handle.clone()) else {
             m.queue.remove(ws);
             self.set_status(
                 ws,
-                WorkstreamStatus::Failed { reason: "no provisioned worktree to merge".into() },
+                WorkstreamStatus::Failed {
+                    reason: "no provisioned worktree to merge".into(),
+                },
             );
             self.emit_queue_update();
             return;
@@ -1355,19 +1451,33 @@ where
                 } else {
                     None
                 };
-                Ok(RebaseData { outcome, diff_stat, target })
+                Ok(RebaseData {
+                    outcome,
+                    diff_stat,
+                    target,
+                })
             })
             .await
             .expect("rebase task panicked");
-            let _ = tx.send(Internal::RebaseDone { ws, in_queue: true, result }).await;
+            let _ = tx
+                .send(Internal::RebaseDone {
+                    ws,
+                    in_queue: true,
+                    result,
+                })
+                .await;
         });
     }
 
     /// Quiet-point rebase of an active workstream after main moved.
     fn spawn_quiet_rebase(&mut self, ws: WorkstreamId) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         let Some(w) = m.ws.get_mut(&ws) else { return };
-        let Some(handle) = w.provisioned.as_ref().map(|p| p.handle.clone()) else { return };
+        let Some(handle) = w.provisioned.as_ref().map(|p| p.handle.clone()) else {
+            return;
+        };
         w.busy = true;
         self.set_status(ws, WorkstreamStatus::Rebasing);
         let deps = self.shared.deps.clone();
@@ -1376,11 +1486,21 @@ where
             let result = tokio::task::spawn_blocking(move || -> Result<RebaseData, GitError> {
                 let target = deps.main_branch()?;
                 let outcome = deps.rebase_onto(&handle, &target)?;
-                Ok(RebaseData { outcome, diff_stat: None, target })
+                Ok(RebaseData {
+                    outcome,
+                    diff_stat: None,
+                    target,
+                })
             })
             .await
             .expect("rebase task panicked");
-            let _ = tx.send(Internal::RebaseDone { ws, in_queue: false, result }).await;
+            let _ = tx
+                .send(Internal::RebaseDone {
+                    ws,
+                    in_queue: false,
+                    result,
+                })
+                .await;
         });
     }
 
@@ -1397,7 +1517,11 @@ where
             w.busy = false;
         }
         match result {
-            Ok(RebaseData { outcome: RebaseOutcome::Clean, diff_stat, target }) => {
+            Ok(RebaseData {
+                outcome: RebaseOutcome::Clean,
+                diff_stat,
+                target,
+            }) => {
                 if in_queue {
                     {
                         let m = self.mission.as_mut().unwrap();
@@ -1405,7 +1529,8 @@ where
                     }
                     self.set_status(ws, WorkstreamStatus::InMergeQueue);
                     self.emit_queue_update();
-                    self.request_merge_confirmation(ws, diff_stat, Some(target)).await;
+                    self.request_merge_confirmation(ws, diff_stat, Some(target))
+                        .await;
                 } else {
                     let stashed = self
                         .mission
@@ -1418,7 +1543,10 @@ where
                     }
                 }
             }
-            Ok(RebaseData { outcome: RebaseOutcome::Conflicts { files }, .. }) => {
+            Ok(RebaseData {
+                outcome: RebaseOutcome::Conflicts { files },
+                ..
+            }) => {
                 if in_queue {
                     let m = self.mission.as_mut().unwrap();
                     m.queue.set_state(ws, MergeQueueState::ConflictFix);
@@ -1429,8 +1557,7 @@ where
                 }
                 self.set_status(ws, WorkstreamStatus::ConflictFix);
                 let spec = self.mission.as_ref().unwrap().ws[&ws].spec.clone();
-                let files: Vec<String> =
-                    files.iter().map(|f| f.display().to_string()).collect();
+                let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
                 let profile = station_profile(Station::Helm, &self.shared.config);
                 let mut order = Order::new(
                     ws,
@@ -1441,7 +1568,11 @@ where
                 order.allowed_tools = profile.allowed_tools.clone();
                 order.disallowed_tools = profile.disallowed_tools.clone();
                 self.screen_and_dispatch(
-                    Dispatch::Helm { ws, purpose: TurnPurpose::FixConflicts { in_queue }, order },
+                    Dispatch::Helm {
+                        ws,
+                        purpose: TurnPurpose::FixConflicts { in_queue },
+                        order,
+                    },
                     &profile.allowed_tools,
                 )
                 .await;
@@ -1449,7 +1580,9 @@ where
             Err(e) => {
                 self.set_status(
                     ws,
-                    WorkstreamStatus::Failed { reason: format!("rebase failed: {e}") },
+                    WorkstreamStatus::Failed {
+                        reason: format!("rebase failed: {e}"),
+                    },
                 );
                 self.abandon_queue_entry(ws).await;
                 self.start_eligible().await;
@@ -1464,7 +1597,9 @@ where
         target: Option<String>,
     ) {
         let (branch, summary) = {
-            let Some(m) = self.mission.as_ref() else { return };
+            let Some(m) = self.mission.as_ref() else {
+                return;
+            };
             let w = &m.ws[&ws];
             (w.spec.branch_name(&m.plan.slug), w.spec.title.clone())
         };
@@ -1486,22 +1621,36 @@ where
                     .unwrap_or_default()
             }
         };
-        let proposal = MergeProposal { workstream: ws, branch, target, summary, diff_stat };
+        let proposal = MergeProposal {
+            workstream: ws,
+            branch,
+            target,
+            summary,
+            diff_stat,
+        };
         if let Some(m) = self.mission.as_mut() {
             m.pending_merges.insert(ws, proposal.clone());
         }
-        self.shared.emit(BridgeEvent::MergeConfirmationRequested(proposal));
+        self.shared
+            .emit(BridgeEvent::MergeConfirmationRequested(proposal));
     }
 
     async fn confirm_merge(&mut self, ws: WorkstreamId, approved: bool) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         if m.queue.state_of(ws) != Some(MergeQueueState::AwaitingConfirmation) {
             tracing::warn!("ConfirmMerge for {ws} ignored: not awaiting confirmation");
             return;
         }
         m.pending_merges.remove(&ws);
         if !approved {
-            self.set_status(ws, WorkstreamStatus::Failed { reason: "merge rejected by user".into() });
+            self.set_status(
+                ws,
+                WorkstreamStatus::Failed {
+                    reason: "merge rejected by user".into(),
+                },
+            );
             self.abandon_queue_entry(ws).await;
             self.start_eligible().await;
             return;
@@ -1524,7 +1673,9 @@ where
         match result {
             Ok(_) => {
                 {
-                    let Some(m) = self.mission.as_mut() else { return };
+                    let Some(m) = self.mission.as_mut() else {
+                        return;
+                    };
                     m.queue.set_state(ws, MergeQueueState::Done);
                     m.queue.remove(ws);
                     if let Some(w) = m.ws.get_mut(&ws) {
@@ -1537,26 +1688,33 @@ where
                 // gets rebased onto the new main at its next quiet point.
                 let (idle, busy): (Vec<WorkstreamId>, Vec<WorkstreamId>) = {
                     let m = self.mission.as_ref().unwrap();
-                    let active: Vec<(WorkstreamId, bool)> = m
-                        .ws
-                        .iter()
-                        .filter(|(id, w)| {
-                            **id != ws
-                                && w.started
-                                && w.provisioned.is_some()
-                                && !matches!(
-                                    w.status,
-                                    WorkstreamStatus::Merged
-                                        | WorkstreamStatus::Failed { .. }
-                                        | WorkstreamStatus::Flagged
-                                )
-                                && m.queue.state_of(**id).is_none()
-                        })
-                        .map(|(id, w)| (*id, w.busy))
-                        .collect();
+                    let active: Vec<(WorkstreamId, bool)> =
+                        m.ws.iter()
+                            .filter(|(id, w)| {
+                                **id != ws
+                                    && w.started
+                                    && w.provisioned.is_some()
+                                    && !matches!(
+                                        w.status,
+                                        WorkstreamStatus::Merged
+                                            | WorkstreamStatus::Failed { .. }
+                                            | WorkstreamStatus::Flagged
+                                    )
+                                    && m.queue.state_of(**id).is_none()
+                            })
+                            .map(|(id, w)| (*id, w.busy))
+                            .collect();
                     (
-                        active.iter().filter(|(_, b)| !b).map(|(id, _)| *id).collect(),
-                        active.iter().filter(|(_, b)| *b).map(|(id, _)| *id).collect(),
+                        active
+                            .iter()
+                            .filter(|(_, b)| !b)
+                            .map(|(id, _)| *id)
+                            .collect(),
+                        active
+                            .iter()
+                            .filter(|(_, b)| *b)
+                            .map(|(id, _)| *id)
+                            .collect(),
                     )
                 };
                 for id in busy {
@@ -1575,7 +1733,12 @@ where
                 self.maybe_finish();
             }
             Err(e) => {
-                self.set_status(ws, WorkstreamStatus::Failed { reason: format!("merge failed: {e}") });
+                self.set_status(
+                    ws,
+                    WorkstreamStatus::Failed {
+                        reason: format!("merge failed: {e}"),
+                    },
+                );
                 self.abandon_queue_entry(ws).await;
                 self.start_eligible().await;
             }
@@ -1586,7 +1749,9 @@ where
     /// the queue move on.
     async fn abandon_queue_entry(&mut self, ws: WorkstreamId) {
         let removed = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             m.pending_merges.remove(&ws);
             if m.queue.contains(ws) {
                 m.queue.remove(ws);
@@ -1606,7 +1771,9 @@ where
 
     async fn override_flagged(&mut self, ws: WorkstreamId) {
         {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             let Some(w) = m.ws.get(&ws) else { return };
             if w.status != WorkstreamStatus::Flagged {
                 tracing::warn!("OverrideFlagged for {ws} ignored: not flagged");
@@ -1625,20 +1792,27 @@ where
     // -- pauses ------------------------------------------------------------
 
     fn pause_rate_limited(&mut self, hit: RateLimitHit) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         if m.paused.is_some() {
             return;
         }
-        let reason = PauseReason::RateLimited { retry_at: hit.retry_at };
+        let reason = PauseReason::RateLimited {
+            retry_at: hit.retry_at,
+        };
         m.paused = Some(reason.clone());
         let mission_id = m.plan.mission_id;
         self.shared
-            .emit(BridgeEvent::RateLimit(RateLimitState::Hit { retry_at: hit.retry_at }));
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: mission_id,
-            state: MissionState::Paused { reason },
-            detail: Some(hit.trigger.clone()),
-        }));
+            .emit(BridgeEvent::RateLimit(RateLimitState::Hit {
+                retry_at: hit.retry_at,
+            }));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: mission_id,
+                state: MissionState::Paused { reason },
+                detail: Some(hit.trigger.clone()),
+            }));
         let delay = hit
             .retry_at
             .and_then(|t| (t - Utc::now()).to_std().ok())
@@ -1652,25 +1826,31 @@ where
 
     async fn rate_limit_probe(&mut self) {
         let mission_id = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             if !matches!(m.paused, Some(PauseReason::RateLimited { .. })) {
                 return;
             }
             m.paused = None;
             m.plan.mission_id
         };
-        self.shared.emit(BridgeEvent::RateLimit(RateLimitState::Cleared));
-        self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-            mission: mission_id,
-            state: MissionState::Executing,
-            detail: None,
-        }));
+        self.shared
+            .emit(BridgeEvent::RateLimit(RateLimitState::Cleared));
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission: mission_id,
+                state: MissionState::Executing,
+                detail: None,
+            }));
         self.flush_pending().await;
     }
 
     async fn extend_budget(&mut self, ext: BudgetExtension) {
         let resumed = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                return;
+            };
             m.max_total_turns += ext.extra_total_turns;
             m.max_turns_per_ws += ext.extra_turns_per_workstream;
             if ext.extra_wall_clock_secs > 0 {
@@ -1686,11 +1866,12 @@ where
         };
         self.emit_budget();
         if let Some(mission_id) = resumed {
-            self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
-                mission: mission_id,
-                state: MissionState::Executing,
-                detail: None,
-            }));
+            self.shared
+                .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                    mission: mission_id,
+                    state: MissionState::Executing,
+                    detail: None,
+                }));
             self.flush_pending().await;
         }
     }
@@ -1698,7 +1879,9 @@ where
     async fn flush_pending(&mut self) {
         loop {
             let next = {
-                let Some(m) = self.mission.as_mut() else { return };
+                let Some(m) = self.mission.as_mut() else {
+                    return;
+                };
                 if m.paused.is_some() {
                     return;
                 }
@@ -1721,9 +1904,14 @@ where
             self.shared.emit(BridgeEvent::EscalationRequested(ticket));
         }
         let (tickets, proposals) = {
-            let Some(m) = self.mission.as_ref() else { return };
+            let Some(m) = self.mission.as_ref() else {
+                return;
+            };
             (
-                m.escalations.values().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
+                m.escalations
+                    .values()
+                    .map(|(t, _)| t.clone())
+                    .collect::<Vec<_>>(),
                 m.pending_merges.values().cloned().collect::<Vec<_>>(),
             )
         };
@@ -1731,7 +1919,8 @@ where
             self.shared.emit(BridgeEvent::EscalationRequested(ticket));
         }
         for proposal in proposals {
-            self.shared.emit(BridgeEvent::MergeConfirmationRequested(proposal));
+            self.shared
+                .emit(BridgeEvent::MergeConfirmationRequested(proposal));
         }
     }
 
@@ -1739,28 +1928,40 @@ where
         let dispatch = {
             let Some(m) = self.mission.as_mut() else {
                 // No mission context: it can only be a hook ticket.
-                self.shared.deps.resolve_hook_escalation(id, decision.clone());
-                self.shared.emit(BridgeEvent::EscalationResolved { id, decision });
+                self.shared
+                    .deps
+                    .resolve_hook_escalation(id, decision.clone());
+                self.shared
+                    .emit(BridgeEvent::EscalationResolved { id, decision });
                 return;
             };
-            m.escalations.remove(&id).map(|(_ticket, dispatch)| dispatch)
+            m.escalations
+                .remove(&id)
+                .map(|(_ticket, dispatch)| dispatch)
         };
         let Some(dispatch) = dispatch else {
             // Not a controller order-screening ticket: it belongs to the
             // control server's hook broker (a mid-run tool-call escalation).
-            self.shared.deps.resolve_hook_escalation(id, decision.clone());
-            self.shared.emit(BridgeEvent::EscalationResolved { id, decision });
+            self.shared
+                .deps
+                .resolve_hook_escalation(id, decision.clone());
+            self.shared
+                .emit(BridgeEvent::EscalationResolved { id, decision });
             return;
         };
-        self.shared
-            .emit(BridgeEvent::EscalationResolved { id, decision: decision.clone() });
+        self.shared.emit(BridgeEvent::EscalationResolved {
+            id,
+            decision: decision.clone(),
+        });
         match decision {
             UserDecision::Approve => self.try_dispatch(dispatch).await,
             UserDecision::Deny { reason } => {
                 if let Some(ws) = dispatch.ws() {
                     self.set_status(
                         ws,
-                        WorkstreamStatus::Failed { reason: format!("order denied by user: {reason}") },
+                        WorkstreamStatus::Failed {
+                            reason: format!("order denied by user: {reason}"),
+                        },
                     );
                 }
                 self.start_eligible().await;
@@ -1775,7 +1976,9 @@ where
     /// it without creating async recursion.
     fn maybe_finish(&mut self) {
         let finish = {
-            let Some(m) = self.mission.as_ref() else { return };
+            let Some(m) = self.mission.as_ref() else {
+                return;
+            };
             if m.comms_dispatched {
                 return;
             }
@@ -1801,7 +2004,12 @@ where
             }
             // The final report deliberately bypasses the budget gate: a
             // finished mission always gets its Comms turn.
-            if self.shared.internal_tx.try_send(Internal::DispatchComms).is_err() {
+            if self
+                .shared
+                .internal_tx
+                .try_send(Internal::DispatchComms)
+                .is_err()
+            {
                 tracing::error!("internal channel full; comms report dropped");
             }
         }
@@ -1810,7 +2018,9 @@ where
     // -- bookkeeping ------------------------------------------------------
 
     fn set_status(&mut self, id: WorkstreamId, status: WorkstreamStatus) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         let Some(w) = m.ws.get_mut(&id) else { return };
         if w.status == status {
             return;
@@ -1819,7 +2029,8 @@ where
         if let Err(e) = self.shared.deps.record_workstream_status(id, &status) {
             tracing::warn!("failed to record workstream status: {e}");
         }
-        self.shared.emit(BridgeEvent::WorkstreamStatus { id, status });
+        self.shared
+            .emit(BridgeEvent::WorkstreamStatus { id, status });
     }
 
     fn record_turn_outcome(
@@ -1830,7 +2041,9 @@ where
         started_at: DateTime<Utc>,
         outcome: &TurnOutcome,
     ) {
-        let Some(m) = self.mission.as_mut() else { return };
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
         let r = outcome.result.as_ref();
         let record = bridge_core::TurnRecord {
             order: order_id,
@@ -1847,8 +2060,12 @@ where
                 .map(|x| x.subtype.clone())
                 .unwrap_or_else(|| format!("{:?}", outcome.exit)),
             total_cost_usd: r.and_then(|x| x.total_cost_usd),
-            input_tokens: r.and_then(|x| x.usage.as_ref()).and_then(|u| u.input_tokens),
-            output_tokens: r.and_then(|x| x.usage.as_ref()).and_then(|u| u.output_tokens),
+            input_tokens: r
+                .and_then(|x| x.usage.as_ref())
+                .and_then(|u| u.input_tokens),
+            output_tokens: r
+                .and_then(|x| x.usage.as_ref())
+                .and_then(|u| u.output_tokens),
         };
         m.total_turns += 1;
         m.total_cost += record.total_cost_usd.unwrap_or(0.0);
@@ -1864,7 +2081,9 @@ where
     }
 
     fn emit_budget(&self) {
-        let Some(m) = self.mission.as_ref() else { return };
+        let Some(m) = self.mission.as_ref() else {
+            return;
+        };
         let snapshot = BudgetSnapshot {
             mission: m.plan.mission_id,
             total_turns: m.total_turns,
@@ -1872,7 +2091,10 @@ where
             per_workstream: m
                 .order
                 .iter()
-                .map(|id| WorkstreamTurns { workstream: *id, turns: m.ws[id].turns })
+                .map(|id| WorkstreamTurns {
+                    workstream: *id,
+                    turns: m.ws[id].turns,
+                })
                 .collect(),
             wall_clock_secs: (Utc::now() - m.started_at).num_seconds().max(0) as u64,
             max_wall_clock_secs: m.max_wall_clock_secs,
@@ -1883,7 +2105,8 @@ where
 
     fn emit_queue_update(&self) {
         if let Some(m) = self.mission.as_ref() {
-            self.shared.emit(BridgeEvent::MergeQueueUpdate(m.queue.snapshot()));
+            self.shared
+                .emit(BridgeEvent::MergeQueueUpdate(m.queue.snapshot()));
         }
     }
 }

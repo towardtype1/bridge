@@ -128,16 +128,22 @@ pub enum WorkstreamStatus {
     Pending,
     Working,
     /// Kobayashi Maru round in progress.
-    UnderTest { round: u32 },
+    UnderTest {
+        round: u32,
+    },
     /// Kobayashi Maru found failures; a fix order is running or queued.
-    Breached { round: u32 },
+    Breached {
+        round: u32,
+    },
     ReadyToMerge,
     Rebasing,
     /// Rebase conflicts being fixed by a Helm order.
     ConflictFix,
     InMergeQueue,
     Merged,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
     /// Still breached after max Kobayashi rounds; merge needs user override.
     Flagged,
 }
@@ -291,7 +297,9 @@ mod tests {
     #[test]
     fn log_entry_builder_attaches_context() {
         let ws = WorkstreamId::new();
-        let entry = LogEntry::new(LogLevel::Info, "engaged").station(Station::Helm).workstream(ws);
+        let entry = LogEntry::new(LogLevel::Info, "engaged")
+            .station(Station::Helm)
+            .workstream(ws);
         assert_eq!(entry.station, Some(Station::Helm));
         assert_eq!(entry.workstream, Some(ws));
     }

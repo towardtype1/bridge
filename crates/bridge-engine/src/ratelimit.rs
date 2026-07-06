@@ -14,8 +14,8 @@
 //! at `initial_probe_secs`, doubling to a cap, or a single timer when
 //! `retry_at` is known.
 
-use bridge_compat::{ApiErrorCategory, StreamEvent};
 use crate::runner::{ExitClass, TurnOutcome};
+use bridge_compat::{ApiErrorCategory, StreamEvent};
 use chrono::{DateTime, Utc};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -198,7 +198,11 @@ mod tests {
         })
     }
 
-    fn api_retry(category: ApiErrorCategory, attempt: u32, max_retries: Option<u32>) -> StreamEvent {
+    fn api_retry(
+        category: ApiErrorCategory,
+        attempt: u32,
+        max_retries: Option<u32>,
+    ) -> StreamEvent {
         StreamEvent::ApiRetry(ApiRetry {
             attempt,
             max_retries,

@@ -1,5 +1,6 @@
 //! Spawning one claude turn: process, stream parsing, timeout, semaphore.
 
+use crate::ratelimit::RateLimitHit;
 use bridge_compat::{
     ApiErrorCategory, AssistantContent, ClaudeInvocation, ResultEvent, StreamEvent, parse_line,
     scrubbed_env,
@@ -7,7 +8,6 @@ use bridge_compat::{
 use bridge_core::{
     BridgeEvent, ClaudeConfig, LogEntry, LogLevel, RateLimitState, Station, WorkstreamId,
 };
-use crate::ratelimit::RateLimitHit;
 use chrono::DateTime;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -115,7 +115,8 @@ impl ClaudeRunner {
     /// back to racing for whichever of (reserved, general) frees first;
     /// general turns only ever wait on the general semaphore.
     async fn acquire_slot(&self, kobayashi: bool) -> Result<OwnedSemaphorePermit, EngineError> {
-        if kobayashi && self.reserved.available_permits() > 0
+        if kobayashi
+            && self.reserved.available_permits() > 0
             && let Ok(permit) = Arc::clone(&self.reserved).try_acquire_owned()
         {
             return Ok(permit);
@@ -154,7 +155,11 @@ impl ClaudeRunner {
     /// 7. clear the pid via `ctx.pid_register(pid, false)`.
     ///
     /// Never panics on malformed stream lines: they are logged and skipped.
-    pub async fn run_turn(&self, inv: ClaudeInvocation, ctx: TurnCtx) -> Result<TurnOutcome, EngineError> {
+    pub async fn run_turn(
+        &self,
+        inv: ClaudeInvocation,
+        ctx: TurnCtx,
+    ) -> Result<TurnOutcome, EngineError> {
         let _permit = self.acquire_slot(ctx.kobayashi).await?;
 
         let mut cmd = Command::new(&self.config.binary_path);
@@ -172,7 +177,11 @@ impl ClaudeRunner {
             Ok(child) => child,
             Err(err) => {
                 let msg = format!("{}: {err}", self.config.binary_path);
-                self.emit_log(&ctx, LogLevel::Error, format!("failed to spawn claude: {msg}"));
+                self.emit_log(
+                    &ctx,
+                    LogLevel::Error,
+                    format!("failed to spawn claude: {msg}"),
+                );
                 return Ok(TurnOutcome {
                     exit: ExitClass::SpawnFailed(msg),
                     result: None,
@@ -222,7 +231,9 @@ impl ClaudeRunner {
                         ExitClass::NonZero(status.code().unwrap_or(-1))
                     }
                 }
-                Ok(Err(err)) => ExitClass::SpawnFailed(format!("wait on claude child failed: {err}")),
+                Ok(Err(err)) => {
+                    ExitClass::SpawnFailed(format!("wait on claude child failed: {err}"))
+                }
                 Err(_) => {
                     self.kill_gracefully(&mut child, pid).await;
                     ExitClass::TimedOut
@@ -373,7 +384,9 @@ impl ClaudeRunner {
             StreamEvent::UserToolResult(_) => {}
             StreamEvent::RateLimit(rl) => {
                 if rl.status != "allowed" {
-                    let retry_at = rl.resets_at.and_then(|secs| DateTime::from_timestamp(secs, 0));
+                    let retry_at = rl
+                        .resets_at
+                        .and_then(|secs| DateTime::from_timestamp(secs, 0));
                     let hit = RateLimitHit {
                         retry_at,
                         trigger: format!("rate_limit_event status \"{}\"", rl.status),
@@ -488,7 +501,11 @@ mod tests {
         ClaudeRunner::finalize_rate_limit(&mut failed, &ExitClass::NonZero(1));
         assert!(failed.rate_limit.is_some());
 
-        let mut errored_result = state(Some(result("error_during_execution", true, None)), None, true);
+        let mut errored_result = state(
+            Some(result("error_during_execution", true, None)),
+            None,
+            true,
+        );
         ClaudeRunner::finalize_rate_limit(&mut errored_result, &ExitClass::Success);
         assert!(errored_result.rate_limit.is_some());
 

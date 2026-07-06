@@ -39,7 +39,11 @@ fn spawn_stub(behavior: StubBehavior) -> (String, mpsc::Receiver<Vec<u8>>) {
             let _ = tx.send(request);
             match behavior {
                 StubBehavior::Respond { status, body } => {
-                    let reason = if status == 200 { "OK" } else { "Internal Server Error" };
+                    let reason = if status == 200 {
+                        "OK"
+                    } else {
+                        "Internal Server Error"
+                    };
                     let response = format!(
                         "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
@@ -111,7 +115,9 @@ fn run_helper(stdin_bytes: &[u8], envs: &[(&str, &str)], args: &[&str]) -> Outpu
         cmd.env(key, value);
     }
     cmd.args(args);
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("spawn helper");
     child
         .stdin
@@ -132,10 +138,18 @@ fn base_env(url: &str) -> Vec<(&str, &str)> {
 
 /// Asserts stdout is a PreToolUse deny decision with a non-empty reason.
 fn assert_pretooluse_deny(output: &Output) {
-    assert_eq!(output.status.code(), Some(0), "helper must exit 0, stderr: {}",
-        String::from_utf8_lossy(&output.stderr));
-    let decision: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|e| panic!("stdout not JSON ({e}): {:?}", String::from_utf8_lossy(&output.stdout)));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "helper must exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decision: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout not JSON ({e}): {:?}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
     let hso = &decision["hookSpecificOutput"];
     assert_eq!(hso["hookEventName"], "PreToolUse");
     assert_eq!(hso["permissionDecision"], "deny");
@@ -167,7 +181,9 @@ fn happy_path_prints_server_body_verbatim_and_posts_wire_request() {
         "stdout must be the response body verbatim"
     );
 
-    let captured = rx.recv_timeout(Duration::from_secs(5)).expect("request captured");
+    let captured = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request captured");
     let text = String::from_utf8_lossy(&captured).into_owned();
     let headers_end = text.find("\r\n\r\n").expect("request has headers");
     let head = text[..headers_end].to_lowercase();
@@ -184,7 +200,10 @@ fn happy_path_prints_server_body_verbatim_and_posts_wire_request() {
         serde_json::from_slice(&captured[headers_end + 4..]).expect("wire body is JSON");
     assert_eq!(wire["workstream_id"], WS_ID);
     let expected_payload: serde_json::Value = serde_json::from_str(PRETOOLUSE).unwrap();
-    assert_eq!(wire["payload"], expected_payload, "payload forwarded untouched");
+    assert_eq!(
+        wire["payload"], expected_payload,
+        "payload forwarded untouched"
+    );
 }
 
 #[test]
@@ -196,8 +215,14 @@ fn missing_env_vars_denies_pretooluse() {
 #[test]
 fn partially_missing_env_denies_pretooluse() {
     // Token absent; the other two present.
-    let (url, _rx) = spawn_stub(StubBehavior::Respond { status: 200, body: "{}" });
-    let envs = [("BRIDGE_SERVER_URL", url.as_str()), ("BRIDGE_WORKSTREAM_ID", WS_ID)];
+    let (url, _rx) = spawn_stub(StubBehavior::Respond {
+        status: 200,
+        body: "{}",
+    });
+    let envs = [
+        ("BRIDGE_SERVER_URL", url.as_str()),
+        ("BRIDGE_WORKSTREAM_ID", WS_ID),
+    ];
     let output = run_helper(PRETOOLUSE.as_bytes(), &envs, &[]);
     assert_pretooluse_deny(&output);
 }
@@ -211,14 +236,20 @@ fn connection_refused_denies_pretooluse() {
 
 #[test]
 fn server_500_denies_pretooluse() {
-    let (url, _rx) = spawn_stub(StubBehavior::Respond { status: 500, body: "boom" });
+    let (url, _rx) = spawn_stub(StubBehavior::Respond {
+        status: 500,
+        body: "boom",
+    });
     let output = run_helper(PRETOOLUSE.as_bytes(), &base_env(&url), &[]);
     assert_pretooluse_deny(&output);
 }
 
 #[test]
 fn empty_200_body_denies_pretooluse() {
-    let (url, _rx) = spawn_stub(StubBehavior::Respond { status: 200, body: "" });
+    let (url, _rx) = spawn_stub(StubBehavior::Respond {
+        status: 200,
+        body: "",
+    });
     let output = run_helper(PRETOOLUSE.as_bytes(), &base_env(&url), &[]);
     assert_pretooluse_deny(&output);
 }
@@ -303,7 +334,9 @@ fn argv_overrides_beat_env() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(output.stdout, body.as_bytes());
 
-    let captured = rx.recv_timeout(Duration::from_secs(5)).expect("request captured");
+    let captured = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("request captured");
     let text = String::from_utf8_lossy(&captured).into_owned();
     let headers_end = text.find("\r\n\r\n").expect("request has headers");
     let head = text[..headers_end].to_lowercase();
@@ -313,5 +346,8 @@ fn argv_overrides_beat_env() {
     );
     let wire: serde_json::Value =
         serde_json::from_slice(&captured[headers_end + 4..]).expect("wire body is JSON");
-    assert_eq!(wire["workstream_id"], argv_ws, "argv workstream must beat env");
+    assert_eq!(
+        wire["workstream_id"], argv_ws,
+        "argv workstream must beat env"
+    );
 }

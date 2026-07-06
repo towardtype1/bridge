@@ -6,6 +6,7 @@
 //! are blocking; the controller calls them via `tokio::task::spawn_blocking`.
 
 use bridge_compat::ClaudeInvocation;
+use bridge_computer::{ComputerError, ShipsComputer};
 use bridge_core::{
     BattleReport, BridgeConfig, EscalationId, Finding, HookDecisionRecord, MergeMode, MissionId,
     MissionPlan, Order, SessionId, Station, TurnRecord, UserDecision, WorkstreamId,
@@ -16,7 +17,6 @@ use bridge_git::{GitError, MergeOutcome, RebaseOutcome, WorktreeHandle, Worktree
 use bridge_tactical::{
     ControlServerHandle, EscalationBroker, PolicyEngine, ScreenResult, WorkstreamCtx,
 };
-use bridge_computer::{ComputerError, ShipsComputer};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +35,12 @@ pub trait GitPort: Send + Sync + 'static {
     fn repo_root(&self) -> PathBuf {
         PathBuf::from(".")
     }
-    fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError>;
+    fn create_worktree(
+        &self,
+        mission: &str,
+        ws: &str,
+        base: &str,
+    ) -> Result<WorktreeHandle, GitError>;
     fn create_throwaway(&self, branch: &str) -> Result<WorktreeHandle, GitError>;
     /// HEAD commit of a specific (possibly detached) worktree.
     fn worktree_head(&self, h: &WorktreeHandle) -> Result<String, GitError>;
@@ -46,7 +51,11 @@ pub trait GitPort: Send + Sync + 'static {
     fn diff_stat_against_main(&self, branch: &str) -> Result<String, GitError>;
     fn changed_files_against_main(&self, branch: &str) -> Result<Vec<PathBuf>, GitError>;
     fn commits_ahead(&self, branch: &str, base: &str) -> Result<Vec<String>, GitError>;
-    fn cherry_pick(&self, h: &WorktreeHandle, commits: &[String]) -> Result<Result<(), String>, GitError>;
+    fn cherry_pick(
+        &self,
+        h: &WorktreeHandle,
+        commits: &[String],
+    ) -> Result<Result<(), String>, GitError>;
     fn add_worktree_exclude(&self, h: &WorktreeHandle, patterns: &[&str]) -> Result<(), GitError>;
     fn rev_parse(&self, reference: &str) -> Result<String, GitError>;
 }
@@ -71,14 +80,40 @@ pub trait TacticalPort: Send + Sync + 'static {
 }
 
 pub trait ComputerPort: Send + Sync + 'static {
-    fn record_mission(&self, plan: &MissionPlan, config: &BridgeConfig) -> Result<(), ComputerError>;
-    fn record_workstream_status(&self, ws: WorkstreamId, status: &WorkstreamStatus) -> Result<(), ComputerError>;
+    fn record_mission(
+        &self,
+        plan: &MissionPlan,
+        config: &BridgeConfig,
+    ) -> Result<(), ComputerError>;
+    fn record_workstream_status(
+        &self,
+        ws: WorkstreamId,
+        status: &WorkstreamStatus,
+    ) -> Result<(), ComputerError>;
     fn record_mission_complete(&self, mission: MissionId) -> Result<(), ComputerError>;
     fn record_turn(&self, mission: MissionId, turn: &TurnRecord) -> Result<(), ComputerError>;
-    fn record_hook_decision(&self, mission: MissionId, d: &HookDecisionRecord) -> Result<(), ComputerError>;
-    fn record_session(&self, ws: WorkstreamId, station: Station, session: &SessionId, cwd: &Path) -> Result<(), ComputerError>;
-    fn session_for(&self, ws: WorkstreamId, station: Station) -> Result<Option<(SessionId, PathBuf)>, ComputerError>;
-    fn record_battle_report(&self, report: &BattleReport, files: &[PathBuf]) -> Result<(), ComputerError>;
+    fn record_hook_decision(
+        &self,
+        mission: MissionId,
+        d: &HookDecisionRecord,
+    ) -> Result<(), ComputerError>;
+    fn record_session(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+        session: &SessionId,
+        cwd: &Path,
+    ) -> Result<(), ComputerError>;
+    fn session_for(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+    ) -> Result<Option<(SessionId, PathBuf)>, ComputerError>;
+    fn record_battle_report(
+        &self,
+        report: &BattleReport,
+        files: &[PathBuf],
+    ) -> Result<(), ComputerError>;
     fn findings_for_files(&self, files: &[PathBuf]) -> Result<Vec<Finding>, ComputerError>;
 }
 
@@ -109,7 +144,12 @@ impl GitPort for LiveDeps {
     fn repo_root(&self) -> PathBuf {
         self.worktrees.repo_root().to_path_buf()
     }
-    fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError> {
+    fn create_worktree(
+        &self,
+        mission: &str,
+        ws: &str,
+        base: &str,
+    ) -> Result<WorktreeHandle, GitError> {
         self.worktrees.create(mission, ws, base)
     }
     fn create_throwaway(&self, branch: &str) -> Result<WorktreeHandle, GitError> {
@@ -139,7 +179,11 @@ impl GitPort for LiveDeps {
     fn commits_ahead(&self, branch: &str, base: &str) -> Result<Vec<String>, GitError> {
         self.worktrees.commits_ahead(branch, base)
     }
-    fn cherry_pick(&self, h: &WorktreeHandle, commits: &[String]) -> Result<Result<(), String>, GitError> {
+    fn cherry_pick(
+        &self,
+        h: &WorktreeHandle,
+        commits: &[String],
+    ) -> Result<Result<(), String>, GitError> {
         self.worktrees.cherry_pick(h, commits)
     }
     fn add_worktree_exclude(&self, h: &WorktreeHandle, patterns: &[&str]) -> Result<(), GitError> {
@@ -175,10 +219,18 @@ impl TacticalPort for LiveDeps {
 }
 
 impl ComputerPort for LiveDeps {
-    fn record_mission(&self, plan: &MissionPlan, config: &BridgeConfig) -> Result<(), ComputerError> {
+    fn record_mission(
+        &self,
+        plan: &MissionPlan,
+        config: &BridgeConfig,
+    ) -> Result<(), ComputerError> {
         self.computer.record_mission(plan, config)
     }
-    fn record_workstream_status(&self, ws: WorkstreamId, status: &WorkstreamStatus) -> Result<(), ComputerError> {
+    fn record_workstream_status(
+        &self,
+        ws: WorkstreamId,
+        status: &WorkstreamStatus,
+    ) -> Result<(), ComputerError> {
         self.computer.record_workstream_status(ws, status)
     }
     fn record_mission_complete(&self, mission: MissionId) -> Result<(), ComputerError> {
@@ -187,16 +239,34 @@ impl ComputerPort for LiveDeps {
     fn record_turn(&self, mission: MissionId, turn: &TurnRecord) -> Result<(), ComputerError> {
         self.computer.record_turn(mission, turn)
     }
-    fn record_hook_decision(&self, mission: MissionId, d: &HookDecisionRecord) -> Result<(), ComputerError> {
+    fn record_hook_decision(
+        &self,
+        mission: MissionId,
+        d: &HookDecisionRecord,
+    ) -> Result<(), ComputerError> {
         self.computer.record_hook_decision(mission, d)
     }
-    fn record_session(&self, ws: WorkstreamId, station: Station, session: &SessionId, cwd: &Path) -> Result<(), ComputerError> {
+    fn record_session(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+        session: &SessionId,
+        cwd: &Path,
+    ) -> Result<(), ComputerError> {
         self.computer.record_session(ws, station, session, cwd)
     }
-    fn session_for(&self, ws: WorkstreamId, station: Station) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
+    fn session_for(
+        &self,
+        ws: WorkstreamId,
+        station: Station,
+    ) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
         self.computer.session_for(ws, station)
     }
-    fn record_battle_report(&self, report: &BattleReport, files: &[PathBuf]) -> Result<(), ComputerError> {
+    fn record_battle_report(
+        &self,
+        report: &BattleReport,
+        files: &[PathBuf],
+    ) -> Result<(), ComputerError> {
         self.computer.record_battle_report(report, files)
     }
     fn findings_for_files(&self, files: &[PathBuf]) -> Result<Vec<Finding>, ComputerError> {

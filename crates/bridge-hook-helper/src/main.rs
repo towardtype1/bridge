@@ -385,16 +385,28 @@ mod tests {
     #[test]
     fn resolve_timeout_default_invalid_and_explicit() {
         assert_eq!(resolve_timeout_ms(None), DEFAULT_TIMEOUT_MS);
-        assert_eq!(resolve_timeout_ms(Some("nope".to_owned())), DEFAULT_TIMEOUT_MS);
-        assert_eq!(resolve_timeout_ms(Some("-5".to_owned())), DEFAULT_TIMEOUT_MS);
+        assert_eq!(
+            resolve_timeout_ms(Some("nope".to_owned())),
+            DEFAULT_TIMEOUT_MS
+        );
+        assert_eq!(
+            resolve_timeout_ms(Some("-5".to_owned())),
+            DEFAULT_TIMEOUT_MS
+        );
         assert_eq!(resolve_timeout_ms(Some("500".to_owned())), 500);
         assert_eq!(resolve_timeout_ms(Some(" 500 ".to_owned())), 500);
     }
 
     #[test]
     fn hook_url_joins_with_and_without_trailing_slash() {
-        assert_eq!(hook_url("http://127.0.0.1:49172"), "http://127.0.0.1:49172/hook");
-        assert_eq!(hook_url("http://127.0.0.1:49172/"), "http://127.0.0.1:49172/hook");
+        assert_eq!(
+            hook_url("http://127.0.0.1:49172"),
+            "http://127.0.0.1:49172/hook"
+        );
+        assert_eq!(
+            hook_url("http://127.0.0.1:49172/"),
+            "http://127.0.0.1:49172/hook"
+        );
     }
 
     #[test]
@@ -415,7 +427,10 @@ mod tests {
             assert_eq!(hso["hookEventName"], "PreToolUse", "event {event:?}");
             assert_eq!(hso["permissionDecision"], "deny", "event {event:?}");
             let reason = hso["permissionDecisionReason"].as_str().unwrap();
-            assert!(reason.starts_with("bridge-hook-helper: "), "reason {reason:?}");
+            assert!(
+                reason.starts_with("bridge-hook-helper: "),
+                "reason {reason:?}"
+            );
             assert!(reason.contains("boom"));
         }
     }

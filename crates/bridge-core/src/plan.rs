@@ -98,7 +98,10 @@ impl WorkstreamSpec {
 fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.split('-').all(|part| {
-            !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         })
 }
 
@@ -160,14 +163,22 @@ impl MissionPlan {
 
     /// Dependencies of `id` that must merge before it starts.
     pub fn dependencies_of(&self, id: WorkstreamId) -> Vec<WorkstreamId> {
-        self.edges.iter().filter(|(_, to)| *to == id).map(|(from, _)| *from).collect()
+        self.edges
+            .iter()
+            .filter(|(_, to)| *to == id)
+            .map(|(from, _)| *from)
+            .collect()
     }
 
     /// Kahn's algorithm. Deterministic: ties broken by declaration order.
     /// A cycle is a `PlanError::Cycle` naming one involved workstream.
     pub fn topo_order(&self) -> Result<Vec<WorkstreamId>, PlanError> {
-        let order_index: HashMap<WorkstreamId, usize> =
-            self.workstreams.iter().enumerate().map(|(i, w)| (w.id, i)).collect();
+        let order_index: HashMap<WorkstreamId, usize> = self
+            .workstreams
+            .iter()
+            .enumerate()
+            .map(|(i, w)| (w.id, i))
+            .collect();
         let mut indegree: HashMap<WorkstreamId, usize> =
             self.workstreams.iter().map(|w| (w.id, 0)).collect();
         let mut adj: HashMap<WorkstreamId, Vec<WorkstreamId>> = HashMap::new();
@@ -180,8 +191,11 @@ impl MissionPlan {
             *indegree.entry(to).or_default() += 1;
         }
         let mut ready: VecDeque<WorkstreamId> = {
-            let mut v: Vec<_> =
-                indegree.iter().filter(|(_, d)| **d == 0).map(|(id, _)| *id).collect();
+            let mut v: Vec<_> = indegree
+                .iter()
+                .filter(|(_, d)| **d == 0)
+                .map(|(id, _)| *id)
+                .collect();
             v.sort_by_key(|id| order_index[id]);
             v.into()
         };
@@ -230,7 +244,13 @@ mod tests {
     }
 
     fn plan(ws: &[(&str, &[&str])]) -> Result<MissionPlan, PlanError> {
-        MissionPlan::from_draft(draft(ws), MissionId::new(), "test-mission", "objective", "main")
+        MissionPlan::from_draft(
+            draft(ws),
+            MissionId::new(),
+            "test-mission",
+            "objective",
+            "main",
+        )
     }
 
     #[test]
@@ -238,14 +258,20 @@ mod tests {
         let p = plan(&[("c", &["b"]), ("a", &[]), ("b", &["a"])]).unwrap();
         let order = p.topo_order().unwrap();
         let slug = |id| p.workstream(id).unwrap().slug.clone();
-        assert_eq!(order.iter().map(|&i| slug(i)).collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(
+            order.iter().map(|&i| slug(i)).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
     }
 
     #[test]
     fn independent_workstreams_keep_declaration_order() {
         let p = plan(&[("z", &[]), ("a", &[]), ("m", &[])]).unwrap();
         let order = p.topo_order().unwrap();
-        let slugs: Vec<_> = order.iter().map(|&i| p.workstream(i).unwrap().slug.clone()).collect();
+        let slugs: Vec<_> = order
+            .iter()
+            .map(|&i| p.workstream(i).unwrap().slug.clone())
+            .collect();
         assert_eq!(slugs, ["z", "a", "m"]);
     }
 
@@ -264,7 +290,10 @@ mod tests {
     #[test]
     fn unknown_dependency_is_rejected() {
         let err = plan(&[("a", &["ghost"])]).unwrap_err();
-        assert_eq!(err, PlanError::UnknownDependency("a".into(), "ghost".into()));
+        assert_eq!(
+            err,
+            PlanError::UnknownDependency("a".into(), "ghost".into())
+        );
     }
 
     #[test]
@@ -275,7 +304,15 @@ mod tests {
 
     #[test]
     fn bad_slugs_are_rejected() {
-        for bad in ["", "UPPER", "has space", "trailing-", "-leading", "double--dash", "under_score"] {
+        for bad in [
+            "",
+            "UPPER",
+            "has space",
+            "trailing-",
+            "-leading",
+            "double--dash",
+            "under_score",
+        ] {
             let err = plan(&[(bad, &[])]).unwrap_err();
             assert!(
                 matches!(err, PlanError::InvalidSlug(_)),

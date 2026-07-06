@@ -12,7 +12,9 @@ pub enum BudgetStatus {
     Ok,
     /// Which ceiling was hit, e.g. "max_total_turns",
     /// "max_turns_per_workstream:<slug>", "max_wall_clock_secs".
-    Exhausted { which: String },
+    Exhausted {
+        which: String,
+    },
 }
 
 #[derive(Debug)]
@@ -201,7 +203,10 @@ mod tests {
     fn wall_clock_ceiling_uses_injected_now() {
         let l = ledger(100, 100, Some(3600));
         let ws = WorkstreamId::new();
-        assert_eq!(l.check(ws, t0() + chrono::Duration::seconds(3599)), BudgetStatus::Ok);
+        assert_eq!(
+            l.check(ws, t0() + chrono::Duration::seconds(3599)),
+            BudgetStatus::Ok
+        );
         assert_eq!(
             l.check(ws, t0() + chrono::Duration::seconds(3600)),
             BudgetStatus::Exhausted {
@@ -230,7 +235,10 @@ mod tests {
             extra_turns_per_workstream: 5,
             extra_wall_clock_secs: 3600,
         });
-        assert_eq!(l.check(ws, t0() + chrono::Duration::seconds(120)), BudgetStatus::Ok);
+        assert_eq!(
+            l.check(ws, t0() + chrono::Duration::seconds(120)),
+            BudgetStatus::Ok
+        );
         let snap = l.snapshot(t0());
         assert_eq!(snap.max_total_turns, 6);
         assert_eq!(snap.max_wall_clock_secs, Some(3660));

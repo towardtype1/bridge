@@ -120,7 +120,9 @@ fn header(ui: &mut egui::Ui, state: &mut AppState, out: &mut Vec<BridgeCommand>)
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let alert_label = if state.red_alert {
-                    RichText::new("RED ALERT: ON").color(Color32::WHITE).strong()
+                    RichText::new("RED ALERT: ON")
+                        .color(Color32::WHITE)
+                        .strong()
                 } else {
                     RichText::new("RED ALERT: OFF").color(ALERT_RED)
                 };
@@ -161,17 +163,17 @@ fn budget_row(ui: &mut egui::Ui, state: &AppState, out: &mut Vec<BridgeCommand>)
             (state.wall_clock_fraction(), budget.max_wall_clock_secs)
         {
             ui.label(RichText::new("CLOCK").color(DIM_GRAY).small());
-            ui.add(egui::ProgressBar::new(fraction).desired_width(140.0).text(
-                format!(
-                    "{} / {}",
-                    format_duration_secs(budget.wall_clock_secs),
-                    format_duration_secs(max)
-                ),
-            ));
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .desired_width(140.0)
+                    .text(format!(
+                        "{} / {}",
+                        format_duration_secs(budget.wall_clock_secs),
+                        format_duration_secs(max)
+                    )),
+            );
         }
-        ui.label(
-            RichText::new(format!("COST ${:.2}", budget.total_cost_usd)).color(AMBER),
-        );
+        ui.label(RichText::new(format!("COST ${:.2}", budget.total_cost_usd)).color(AMBER));
         if ui.button("+20 TURNS").clicked() {
             out.push(BridgeCommand::ExtendBudget(BudgetExtension {
                 extra_total_turns: 20,
@@ -215,8 +217,7 @@ fn bottom_bar(ui: &mut egui::Ui, state: &mut AppState, out: &mut Vec<BridgeComma
                     .desired_width((ui.available_width() - 260.0).max(80.0))
                     .hint_text("state your mission objective"),
             );
-            let submitted =
-                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let submitted = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let engage = ui
                 .add_enabled(
                     !state.ui.objective.trim().is_empty(),
@@ -285,7 +286,9 @@ fn right_pane(ui: &mut egui::Ui, state: &AppState) {
                     ui.label(RichText::new(format!("#{}", entry.position)).color(AMBER));
                     ui.label(&entry.branch);
                     ui.label(
-                        RichText::new(format!("{:?}", entry.state)).color(DIM_GRAY).small(),
+                        RichText::new(format!("{:?}", entry.state))
+                            .color(DIM_GRAY)
+                            .small(),
                     );
                 });
             }
@@ -327,14 +330,18 @@ fn center_pane(ui: &mut egui::Ui, state: &mut AppState, out: &mut Vec<BridgeComm
             ui.heading(RichText::new(short_id(&selected)).color(AMBER));
             if let Some(status) = &panel.status {
                 ui.label(
-                    RichText::new(status_label(status)).color(status_color(status)).strong(),
+                    RichText::new(status_label(status))
+                        .color(status_color(status))
+                        .strong(),
                 );
                 if matches!(status, WorkstreamStatus::Flagged)
                     && ui
                         .button(RichText::new("OVERRIDE FLAGGED").color(ALERT_RED).strong())
                         .clicked()
                 {
-                    out.push(BridgeCommand::OverrideFlagged { workstream: selected });
+                    out.push(BridgeCommand::OverrideFlagged {
+                        workstream: selected,
+                    });
                 }
             }
         });
@@ -427,10 +434,7 @@ fn global_log_view(ui: &mut egui::Ui, state: &AppState) {
                     bridge_core::LogLevel::Warn => AMBER,
                     _ => DIM_GRAY,
                 };
-                let station = entry
-                    .station
-                    .map(|s| format!("[{s}] "))
-                    .unwrap_or_default();
+                let station = entry.station.map(|s| format!("[{s}] ")).unwrap_or_default();
                 ui.label(
                     RichText::new(format!(
                         "{} {}{}",
@@ -461,7 +465,11 @@ fn escalation_modal(ctx: &egui::Context, state: &mut AppState, out: &mut Vec<Bri
             if let Some(tool) = &ticket.tool_name {
                 ui.label(RichText::new(format!("tool: {tool}")).color(DIM_GRAY));
             }
-            ui.label(RichText::new(&ticket.tool_input_summary).monospace().small());
+            ui.label(
+                RichText::new(&ticket.tool_input_summary)
+                    .monospace()
+                    .small(),
+            );
             let remaining = escalation_remaining_secs(&ticket, Utc::now());
             ui.label(
                 RichText::new(format!(
@@ -494,7 +502,9 @@ fn escalation_modal(ctx: &egui::Context, state: &mut AppState, out: &mut Vec<Bri
             });
             if more_pending > 0 {
                 ui.label(
-                    RichText::new(format!("{more_pending} more pending")).color(DIM_GRAY).small(),
+                    RichText::new(format!("{more_pending} more pending"))
+                        .color(DIM_GRAY)
+                        .small(),
                 );
             }
         });
@@ -521,9 +531,7 @@ fn merge_confirmation_modal(
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 40.0))
         .show(ctx, |ui| {
-            ui.label(
-                RichText::new(format!("{} -> {}", proposal.branch, proposal.target)).strong(),
-            );
+            ui.label(RichText::new(format!("{} -> {}", proposal.branch, proposal.target)).strong());
             ui.label(&proposal.summary);
             ui.label(RichText::new(&proposal.diff_stat).monospace().small());
             ui.horizontal(|ui| {

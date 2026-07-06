@@ -138,7 +138,10 @@ mod tests {
         reg.forget_workstream(ws_a);
         assert_eq!(reg.resumable(ws_a, Station::Helm, &cwd), None);
         assert_eq!(reg.resumable(ws_a, Station::KobayashiMaru, &cwd), None);
-        assert_eq!(reg.resumable(ws_b, Station::Helm, &cwd), Some(sid("b-helm")));
+        assert_eq!(
+            reg.resumable(ws_b, Station::Helm, &cwd),
+            Some(sid("b-helm"))
+        );
     }
 
     #[test]

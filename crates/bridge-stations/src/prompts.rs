@@ -330,7 +330,10 @@ mod tests {
             first_repeat < solo && second_repeat < solo,
             "recurring class must be listed before the one-off"
         );
-        assert!(first_repeat < second_repeat, "within a class, given order is kept");
+        assert!(
+            first_repeat < second_repeat,
+            "within a class, given order is kept"
+        );
     }
 
     #[test]
@@ -368,7 +371,9 @@ mod tests {
                 },
             ],
         };
-        let plan = MissionPlan::from_draft(draft, MissionId::new(), "m", "The big objective", "main").unwrap();
+        let plan =
+            MissionPlan::from_draft(draft, MissionId::new(), "m", "The big objective", "main")
+                .unwrap();
         let p = comms_mission_report(&plan, "part-one: merged; part-two: failed");
         assert!(p.contains("The big objective"));
         assert!(p.contains("part-one: Part one"));
