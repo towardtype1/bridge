@@ -23,6 +23,7 @@
 //! JSON line on stdout, auto-approves escalations and merge proposals,
 //! and exits when the mission reaches Complete (0) or Failed (1).
 
+mod deck;
 mod state;
 mod theme;
 mod ui;
