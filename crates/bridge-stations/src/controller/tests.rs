@@ -166,7 +166,7 @@ async fn full_mission_two_parallel_workstreams() {
 
     rig.start("ship both features").await;
 
-    // Captain turn carried the PlanDraft schema.
+    // Captain turn carried the CaptainReply schema.
     let captain_turns: Vec<_> = deps
         .turn_log()
         .into_iter()
@@ -2037,6 +2037,110 @@ async fn queued_message_survives_failed_turn_in_order() {
         .find("new-B")
         .expect("new message B present in the next turn");
     assert!(a_pos < b_pos, "queued message A must precede new message B");
+
+    rig.shutdown().await.unwrap();
+}
+
+/// Cleanup: the amendment approved-lock must only clear when no turn is in
+/// flight - mirroring the launch arm, which never force-clears the lock
+/// and instead lets `captain_done`'s discard-hoist do it once the
+/// in-flight turn actually resolves. Otherwise a late, invalid proposal
+/// from that turn is fed into the rejection loop instead of being
+/// discarded.
+#[tokio::test(start_paused = true)]
+async fn amendment_approval_lock_holds_until_in_flight_turn_resolves() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("first", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("go").await;
+
+    // Propose an amendment adding "second".
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Recommend a second workstream.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "first", "title": "Title first", "description": "Description first", "depends_on": [] },
+                { "slug": "second", "title": "T2", "description": "D2", "depends_on": [] }
+            ]}
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "can we also do X?".into(),
+    })
+    .await;
+    let BridgeEvent::PlanProposed { revision, .. } = rig
+        .wait_for("amendment proposed", |e| {
+            matches!(e, BridgeEvent::PlanProposed { .. })
+        })
+        .await
+    else {
+        unreachable!()
+    };
+
+    // Hold the NEXT captain turn open at a barrier: its reply will (later)
+    // try to edit the locked "first" workstream - an invalid amendment.
+    let barrier = Arc::new(Barrier::new(2));
+    *deps.captain_barrier.lock().unwrap() = Some(barrier.clone());
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Late thought.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "first", "title": "Title first", "description": "EDITED LATE", "depends_on": [] },
+                { "slug": "second", "title": "T2", "description": "D2", "depends_on": [] }
+            ]}
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "one more tweak".into(),
+    })
+    .await;
+    rig.wait_for(
+        "user echo tweak",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "one more tweak"),
+    )
+    .await;
+
+    // Approve the amendment while that turn is in flight.
+    rig.send(BridgeCommand::ApproveProposal { revision }).await;
+    rig.wait_for("second provisioned", |e| {
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Working,
+                ..
+            }
+        )
+    })
+    .await;
+
+    // Release the held turn; its late, invalid edit must be discarded
+    // silently, never fed into the rejection loop.
+    barrier.wait().await;
+    *deps.captain_barrier.lock().unwrap() = None;
+    rig.wait_for(
+        "late message surfaced",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("Late thought")),
+    )
+    .await;
+
+    // Bounded drain via sentinel, then assert no rejection-loop turn fired.
+    rig.send(BridgeCommand::ApproveProposal { revision: 999 })
+        .await;
+    rig.wait_for("sentinel rejected", |e| {
+        matches!(e, BridgeEvent::ProposalRejected { revision: 999, .. })
+    })
+    .await;
+    let rejection_turn = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .any(|t| t.inv.prompt.starts_with("AMENDMENT REJECTED: "));
+    assert!(
+        !rejection_turn,
+        "late in-flight proposal must be discarded, not fed to the rejection loop"
+    );
 
     rig.shutdown().await.unwrap();
 }
