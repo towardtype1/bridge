@@ -5,3 +5,4 @@ target/
 *.db-wal
 .DS_Store
 bridge.toml
+.worktrees/
