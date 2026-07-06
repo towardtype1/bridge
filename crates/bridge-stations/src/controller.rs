@@ -1669,11 +1669,19 @@ where
 
     async fn resolve_escalation(&mut self, id: EscalationId, decision: UserDecision) {
         let dispatch = {
-            let Some(m) = self.mission.as_mut() else { return };
+            let Some(m) = self.mission.as_mut() else {
+                // No mission context: it can only be a hook ticket.
+                self.shared.deps.resolve_hook_escalation(id, decision.clone());
+                self.shared.emit(BridgeEvent::EscalationResolved { id, decision });
+                return;
+            };
             m.escalations.remove(&id)
         };
         let Some(dispatch) = dispatch else {
-            tracing::warn!("ResolveEscalation for unknown ticket {id}");
+            // Not a controller order-screening ticket: it belongs to the
+            // control server's hook broker (a mid-run tool-call escalation).
+            self.shared.deps.resolve_hook_escalation(id, decision.clone());
+            self.shared.emit(BridgeEvent::EscalationResolved { id, decision });
             return;
         };
         self.shared

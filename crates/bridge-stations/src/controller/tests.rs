@@ -604,6 +604,43 @@ async fn screen_needs_review_denied_fails_the_workstream() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. a hook (broker) escalation id is forwarded to the control server
+
+#[tokio::test(start_paused = true)]
+async fn resolve_escalation_forwards_hook_ticket_to_broker() {
+    // A mid-run hook escalation lives on the control server's broker, not in
+    // the controller's order-screening map. ResolveEscalation for such an id
+    // must be forwarded to the broker (via TacticalPort), otherwise the user
+    // can never approve a hook and every one fails closed on timeout.
+    let deps = MockDeps::new();
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("mission with a hook escalation").await;
+
+    let hook_id = bridge_core::EscalationId::new();
+    rig.send(BridgeCommand::ResolveEscalation {
+        id: hook_id,
+        decision: UserDecision::Approve,
+    })
+    .await;
+
+    rig.wait_for("hook escalation resolved", |e| {
+        matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == hook_id)
+    })
+    .await;
+
+    rig.wait_until("broker received the resolution", || {
+        deps.resolved_hook_escalations
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(id, d)| *id == hook_id && *d == UserDecision::Approve)
+    })
+    .await;
+
+    let _ = rig.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // 6. shutdown mid-mission
 
 #[tokio::test(start_paused = true)]

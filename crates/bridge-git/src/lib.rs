@@ -162,6 +162,16 @@ impl WorktreeManager {
         Ok(WorktreeHandle { path, branch: branch.to_string() })
     }
 
+    /// Resolve the HEAD commit of a specific worktree. Needed for detached
+    /// worktrees (throwaways): after a Kobayashi tester commits, its work
+    /// lives on a detached HEAD with no branch ref, so the source branch
+    /// name cannot locate the new commits. This reads the actual HEAD of
+    /// that worktree's own checkout.
+    pub fn head_of(&self, handle: &WorktreeHandle) -> Result<String, GitError> {
+        let out = checked_git(&handle.path, &["rev-parse", "HEAD"])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// `git worktree remove` (+ `--force` when asked); prunes bookkeeping.
     /// Does NOT delete the branch.
     pub fn remove(&self, handle: &WorktreeHandle, force: bool) -> Result<(), GitError> {

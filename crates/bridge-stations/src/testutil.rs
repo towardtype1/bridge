@@ -7,8 +7,9 @@
 use crate::ports::{ComputerPort, GitPort, TacticalPort, TurnPort};
 use bridge_compat::ClaudeInvocation;
 use bridge_core::{
-    BattleReport, BridgeConfig, Finding, HookDecisionRecord, MergeMode, MissionId, MissionPlan,
-    Order, SessionId, Station, TurnRecord, WorkstreamId, WorkstreamStatus,
+    BattleReport, BridgeConfig, EscalationId, Finding, HookDecisionRecord, MergeMode, MissionId,
+    MissionPlan, Order, SessionId, Station, TurnRecord, UserDecision, WorkstreamId,
+    WorkstreamStatus,
 };
 use bridge_computer::ComputerError;
 use bridge_engine::{EngineError, RateLimitHit, TurnCtx, TurnOutcome};
@@ -79,6 +80,7 @@ pub enum GitCall {
     Rebase { branch: String, target: String },
     Merge { branch: String },
     CommitsAhead { branch: String, base: String },
+    WorktreeHead { path: PathBuf },
     CherryPick { path: PathBuf, branch: String, commits: Vec<String> },
     Exclude { branch: String, patterns: Vec<String> },
 }
@@ -105,6 +107,7 @@ pub struct MockDeps {
     pub screened: Mutex<Vec<Order>>,
     pub screen_fn: Mutex<Option<ScreenFn>>,
     pub red_alert_calls: Mutex<Vec<bool>>,
+    pub resolved_hook_escalations: Mutex<Vec<(EscalationId, UserDecision)>>,
     token_counter: AtomicU32,
     // -- computer port -----------------------------------------------------
     pub recorded_missions: Mutex<Vec<MissionPlan>>,
@@ -136,6 +139,7 @@ impl MockDeps {
             screened: Mutex::new(Vec::new()),
             screen_fn: Mutex::new(None),
             red_alert_calls: Mutex::new(Vec::new()),
+            resolved_hook_escalations: Mutex::new(Vec::new()),
             token_counter: AtomicU32::new(0),
             recorded_missions: Mutex::new(Vec::new()),
             recorded_statuses: Mutex::new(Vec::new()),
@@ -319,10 +323,23 @@ impl GitPort for MockDeps {
             .push(GitCall::CreateThrowaway { branch: branch.into() });
         let path = self.root.path().join("throwaway").join(n.to_string());
         std::fs::create_dir_all(&path).map_err(GitError::Spawn)?;
+        // Mirror the REAL create_throwaway: a DETACHED worktree whose handle
+        // carries the SOURCE branch name, not a distinct ref. This is what
+        // made the harvest-no-op bug (commits_ahead(branch, branch)) visible.
         Ok(WorktreeHandle {
             path,
-            branch: format!("{branch}@throwaway{n}"),
+            branch: branch.to_string(),
         })
+    }
+
+    fn worktree_head(&self, h: &WorktreeHandle) -> Result<String, GitError> {
+        self.git_calls
+            .lock()
+            .unwrap()
+            .push(GitCall::WorktreeHead { path: h.path.clone() });
+        // A synthetic HEAD sha distinct from the source branch, so
+        // commits_ahead(head, branch) is a non-degenerate range.
+        Ok(format!("{}@throwaway-head", h.branch))
     }
 
     fn remove_worktree(&self, h: &WorktreeHandle, force: bool) -> Result<(), GitError> {
@@ -376,6 +393,12 @@ impl GitPort for MockDeps {
             branch: branch.into(),
             base: base.into(),
         });
+        // Mirror git: an identical ref range yields no commits. This makes
+        // the old harvest bug (comparing the source branch against itself)
+        // fail the harvest assertion instead of silently passing.
+        if branch == base {
+            return Ok(Vec::new());
+        }
         Ok(self
             .commits_ahead_script
             .lock()
@@ -428,6 +451,10 @@ impl TacticalPort for MockDeps {
 
     fn set_red_alert(&self, active: bool) {
         self.red_alert_calls.lock().unwrap().push(active);
+    }
+
+    fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {
+        self.resolved_hook_escalations.lock().unwrap().push((id, decision));
     }
 }
 

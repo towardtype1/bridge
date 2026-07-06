@@ -56,7 +56,7 @@ pub fn build(repo: PathBuf, config: BridgeConfig) -> Result<Wiring, Box<dyn std:
     let broker = Arc::new(EscalationBroker::new());
     let server = ControlServer::new(
         Arc::clone(&policy),
-        broker,
+        Arc::clone(&broker),
         events.clone(),
         config.tactical.escalation_timeout_secs,
         None,
@@ -90,6 +90,7 @@ pub fn build(repo: PathBuf, config: BridgeConfig) -> Result<Wiring, Box<dyn std:
         policy,
         server: server_handle,
         computer,
+        broker,
     });
 
     // 6. Mission controller on the background runtime.

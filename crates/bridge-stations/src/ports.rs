@@ -7,12 +7,15 @@
 
 use bridge_compat::ClaudeInvocation;
 use bridge_core::{
-    BattleReport, BridgeConfig, Finding, HookDecisionRecord, MergeMode, MissionId, MissionPlan,
-    Order, SessionId, Station, TurnRecord, WorkstreamId, WorkstreamStatus,
+    BattleReport, BridgeConfig, EscalationId, Finding, HookDecisionRecord, MergeMode, MissionId,
+    MissionPlan, Order, SessionId, Station, TurnRecord, UserDecision, WorkstreamId,
+    WorkstreamStatus,
 };
 use bridge_engine::{ClaudeRunner, EngineError, TurnCtx, TurnOutcome};
 use bridge_git::{GitError, MergeOutcome, RebaseOutcome, WorktreeHandle, WorktreeManager};
-use bridge_tactical::{ControlServerHandle, PolicyEngine, ScreenResult, WorkstreamCtx};
+use bridge_tactical::{
+    ControlServerHandle, EscalationBroker, PolicyEngine, ScreenResult, WorkstreamCtx,
+};
 use bridge_computer::{ComputerError, ShipsComputer};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -34,6 +37,8 @@ pub trait GitPort: Send + Sync + 'static {
     }
     fn create_worktree(&self, mission: &str, ws: &str, base: &str) -> Result<WorktreeHandle, GitError>;
     fn create_throwaway(&self, branch: &str) -> Result<WorktreeHandle, GitError>;
+    /// HEAD commit of a specific (possibly detached) worktree.
+    fn worktree_head(&self, h: &WorktreeHandle) -> Result<String, GitError>;
     fn remove_worktree(&self, h: &WorktreeHandle, force: bool) -> Result<(), GitError>;
     fn rebase_onto(&self, h: &WorktreeHandle, target: &str) -> Result<RebaseOutcome, GitError>;
     fn merge_into_main(&self, branch: &str, mode: MergeMode) -> Result<MergeOutcome, GitError>;
@@ -53,6 +58,11 @@ pub trait TacticalPort: Send + Sync + 'static {
     fn disarm_workstream(&self, id: WorkstreamId);
     fn screen_order(&self, order: &Order, station_allowed_tools: &[String]) -> ScreenResult;
     fn set_red_alert(&self, active: bool);
+    /// Resolve a mid-run hook (tool-call) escalation held open on the
+    /// control server's broker. Ids unknown to the broker are ignored there
+    /// (the hook already failed closed). Default no-op keeps mocks that
+    /// never raise hook escalations compiling.
+    fn resolve_hook_escalation(&self, _id: EscalationId, _decision: UserDecision) {}
 }
 
 pub trait ComputerPort: Send + Sync + 'static {
@@ -74,6 +84,9 @@ pub struct LiveDeps {
     pub policy: Arc<PolicyEngine>,
     pub server: Arc<ControlServerHandle>,
     pub computer: Arc<ShipsComputer>,
+    /// Shared with the control server so a GUI ResolveEscalation for a
+    /// hook (mid-run) ticket reaches the awaiting hook request.
+    pub broker: Arc<EscalationBroker>,
 }
 
 impl TurnPort for LiveDeps {
@@ -96,6 +109,9 @@ impl GitPort for LiveDeps {
     }
     fn create_throwaway(&self, branch: &str) -> Result<WorktreeHandle, GitError> {
         self.worktrees.create_throwaway(branch)
+    }
+    fn worktree_head(&self, h: &WorktreeHandle) -> Result<String, GitError> {
+        self.worktrees.head_of(h)
     }
     fn remove_worktree(&self, h: &WorktreeHandle, force: bool) -> Result<(), GitError> {
         self.worktrees.remove(h, force)
@@ -144,6 +160,9 @@ impl TacticalPort for LiveDeps {
     }
     fn set_red_alert(&self, active: bool) {
         self.policy.set_red_alert(active);
+    }
+    fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {
+        self.broker.resolve(id, decision);
     }
 }
 

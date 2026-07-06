@@ -162,8 +162,13 @@ impl KobayashiRunner {
             .map_err(|_| KobayashiError::NoReport)?;
 
         // Harvest committed adversarial tests: commits the tester made in
-        // the throwaway, cherry-picked into the implementation worktree.
-        let commits = deps.commits_ahead(&provisioned.handle.branch, branch)?;
+        // the throwaway, cherry-picked into the implementation worktree. The
+        // throwaway is a DETACHED HEAD, so its new commits are reachable only
+        // via its actual HEAD sha, not the source branch name (comparing the
+        // branch against itself would always be empty - the harvest was a
+        // silent no-op before this).
+        let throwaway_head = deps.worktree_head(&provisioned.handle)?;
+        let commits = deps.commits_ahead(&throwaway_head, branch)?;
         if !commits.is_empty() {
             match deps.cherry_pick(impl_worktree, &commits) {
                 Ok(Ok(())) => {}
@@ -280,12 +285,19 @@ mod tests {
         assert!(t.inv.cwd.starts_with(deps.root.path().join("throwaway")));
         assert!(t.inv.prompt.contains("tests/adversarial/"));
 
-        // Committed tests harvested into the implementation worktree.
+        // Committed tests harvested into the implementation worktree: the
+        // harvest must query commits ahead of the throwaway HEAD (a detached
+        // ref), NOT the source branch against itself.
         let git = deps.git_log();
-        assert!(git.contains(&GitCall::CommitsAhead {
-            branch: "bridge/mission-x/ws-a@throwaway0".into(),
-            base: "bridge/mission-x/ws-a".into(),
-        }));
+        assert!(
+            git.iter().any(|c| matches!(
+                c,
+                GitCall::CommitsAhead { branch, base }
+                    if branch == "bridge/mission-x/ws-a@throwaway-head"
+                        && base == "bridge/mission-x/ws-a"
+            )),
+            "harvest must compare the throwaway HEAD against the source branch, got {git:?}"
+        );
         assert!(git.iter().any(|c| matches!(
             c,
             GitCall::CherryPick { path, branch, commits }

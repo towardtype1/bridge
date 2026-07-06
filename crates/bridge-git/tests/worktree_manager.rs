@@ -517,6 +517,41 @@ fn commits_ahead_returns_oldest_first() {
     assert!(env.mgr.commits_ahead("bridge/m1/ws1", "bridge/m1/ws1").unwrap().is_empty());
 }
 
+#[test]
+fn throwaway_head_diverges_and_harvest_finds_the_commit() {
+    // The Kobayashi harvest path: a detached throwaway commits an adversarial
+    // test; its work is reachable only via head_of (not the source branch
+    // name), and commits_ahead(head, source_branch) must find it so it can be
+    // cherry-picked into the implementation worktree.
+    let env = setup();
+    let impl_wt = env.mgr.create("m1", "ws1", "main").unwrap();
+    env.commit_file(&impl_wt.path, "feature.rs", "fn f() {}\n", "impl");
+    let branch = "bridge/m1/ws1";
+
+    let throwaway = env.mgr.create_throwaway(branch).unwrap();
+    // Before any commit the throwaway HEAD equals the branch head: nothing ahead.
+    let base_head = env.mgr.head_of(&throwaway).unwrap();
+    assert_eq!(base_head, env.mgr.rev_parse(branch).unwrap());
+    assert!(env.mgr.commits_ahead(&base_head, branch).unwrap().is_empty());
+
+    // The tester commits an adversarial test onto the detached HEAD.
+    let test_commit =
+        env.commit_file(&throwaway.path, "tests/adversarial/t.rs", "#[test] fn t(){}\n", "attack");
+    let head = env.mgr.head_of(&throwaway).unwrap();
+    assert_eq!(head, test_commit);
+    assert_ne!(head, base_head, "throwaway HEAD must diverge after committing");
+
+    // The OLD buggy call compared the branch against itself: always empty.
+    assert!(env.mgr.commits_ahead(branch, branch).unwrap().is_empty());
+    // The FIXED call finds the tester's commit via the detached HEAD.
+    let harvested = env.mgr.commits_ahead(&head, branch).unwrap();
+    assert_eq!(harvested, vec![test_commit]);
+
+    // And it cherry-picks cleanly into the implementation worktree.
+    assert_eq!(env.mgr.cherry_pick(&impl_wt, &harvested).unwrap(), Ok(()));
+    assert!(impl_wt.path.join("tests/adversarial/t.rs").exists());
+}
+
 // ---------------------------------------------------------------------------
 // cherry_pick()
 // ---------------------------------------------------------------------------
