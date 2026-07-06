@@ -25,7 +25,8 @@
 //! building the root `Ui` itself, exactly as `Context::run_ui` does.
 
 use crate::state::{
-    AppState, escalation_remaining_secs, format_duration_secs, mission_state_label, status_label,
+    AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
+    status_label,
 };
 use crate::theme::{self, ThemeMode, Tokens};
 use bridge_core::{
@@ -633,7 +634,7 @@ fn center(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeC
         .inner_margin(egui::Margin::symmetric(30, 26));
     egui::CentralPanel::default().frame(frame).show(ui, |ui| {
         let Some(selected) = state.ui.selected else {
-            ships_log(ui, t, state);
+            captain_view(ui, t, state, out);
             return;
         };
         let Some(panel) = state.workstreams.get(&selected) else {
@@ -737,6 +738,77 @@ fn center(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeC
                 }
             });
     });
+}
+
+/// Interim conversation surface: transcript, latest proposal card, ship's
+/// log below. Sub-project C replaces this with the deck dialogue.
+fn captain_view(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeCommand>) {
+    section_label(ui, t, "Captain");
+    ui.add_space(8.0);
+    if let Some(card_data) = &state.latest_proposal {
+        card(ui, t, |ui| {
+            ui.label(
+                RichText::new(format!("Proposed plan - revision {}", card_data.revision))
+                    .color(t.text)
+                    .size(13.0)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            for ws in &card_data.plan.workstreams {
+                let marker = match &card_data.diff {
+                    Some(d) if d.added.contains(&ws.slug) => "+",
+                    Some(d) if d.revised.contains(&ws.slug) => "~",
+                    _ => "-",
+                };
+                ui.label(
+                    RichText::new(format!("{marker} {}  {}", ws.slug, ws.title))
+                        .color(t.text_2)
+                        .size(12.5)
+                        .monospace(),
+                );
+            }
+            if let Some(d) = &card_data.diff {
+                for slug in &d.removed {
+                    ui.label(
+                        RichText::new(format!("x {slug}  (cancelled)"))
+                            .color(t.crit)
+                            .size(12.5)
+                            .monospace(),
+                    );
+                }
+            }
+            ui.add_space(8.0);
+            let btn =
+                egui::Button::new(RichText::new("Make it so").color(Color32::WHITE).size(12.5))
+                    .fill(t.accent);
+            if ui.add(btn).clicked() {
+                out.push(BridgeCommand::ApproveProposal {
+                    revision: card_data.revision,
+                });
+            }
+        });
+        ui.add_space(12.0);
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("captain_feed")
+        .stick_to_bottom(true)
+        .max_height(ui.available_height() * 0.5)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (speaker, text) in &state.captain_feed {
+                let (name, color) = match speaker {
+                    CaptainSpeaker::You => ("You", t.text_2),
+                    CaptainSpeaker::Captain => ("Captain", t.accent),
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(name).color(color).size(12.5).strong());
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(text).color(t.text).size(13.5));
+                });
+            }
+        });
+    ui.add_space(12.0);
+    ships_log(ui, t, state);
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
