@@ -227,10 +227,168 @@ pub fn comms_mission_report(plan: &MissionPlan, outcomes_summary: &str) -> Strin
     out
 }
 
+/// The shared conversational contract paragraph used by both captain_confer_opening
+/// and captain_recap, ensuring the wording cannot drift between them.
+const CONTRACT: &str = "Every reply must satisfy the CaptainReply JSON schema: converse in \
+     \"message\" (ask clarifying questions, explain trade-offs, push back), and \
+     include \"proposed_plan\" only when you are ready to propose. Nothing \
+     launches until your officer explicitly approves a proposal, so do not \
+     rush to one if the objective is unclear. When amending later, always \
+     re-emit the full desired plan, not a delta.";
+
+/// Error message prefix when a plan is rejected.
+pub const PLAN_REJECTED_PREFIX: &str = "PLAN REJECTED: ";
+
+/// Error message prefix when an amendment is rejected.
+pub const AMENDMENT_REJECTED_PREFIX: &str = "AMENDMENT REJECTED: ";
+
+/// Message sent when the captain's reply does not match the CaptainReply schema.
+pub const SCHEMA_RETRY_MSG: &str = "Your last reply did not match the required CaptainReply schema. Reply again: converse in \"message\"; include \"proposed_plan\" only when proposing a plan.";
+
+/// Opening turn of a Captain conference. The Captain converses in
+/// `message` and attaches `proposed_plan` only when ready; every proposal
+/// re-emits the FULL desired plan (the controller computes diffs).
+pub fn captain_confer_opening(objective: &str, repo_summary: &str) -> String {
+    format!(
+        "You are opening a planning conference with your commanding officer.\n\
+         \n\
+         ## Objective\n\
+         {objective}\n\
+         \n\
+         ## Repository\n\
+         {repo_summary}\n\
+         \n\
+         ## How this conversation works\n\
+         {contract}\n\
+         \n\
+         ## Plan rules (when you do propose)\n\
+         - Each workstream gets a short kebab-case slug (lowercase alphanumerics and \
+           hyphens; it becomes part of a git branch name), a title, and a description.\n\
+         - Descriptions must be fully self-contained working briefs: the executing agent \
+           sees ONLY its own description, never the objective, the other workstreams, or \
+           this conversation. Include every file path, constraint and acceptance \
+           criterion it needs.\n\
+         - Prefer independent workstreams. Only add a depends_on entry (by slug) when one \
+           workstream genuinely cannot start before another has merged.\n\
+         - The dependency graph must be acyclic.",
+        contract = CONTRACT,
+    )
+}
+
+/// Fresh-session fallback prompt: recap the objective, list current workstream
+/// statuses, and restate the conversational contract.
+pub fn captain_recap(objective: &str, plan: &MissionPlan, statuses: &[(String, String)]) -> String {
+    let mut out = format!(
+        "You are resuming a planning conference with your commanding officer.\n\
+         \n\
+         ## Objective\n\
+         {objective}\n\
+         \n\
+         ## Current workstreams\n",
+        objective = objective,
+    );
+    // Build a lookup map for status by slug
+    let status_map: std::collections::HashMap<&str, &str> = statuses
+        .iter()
+        .map(|(slug, status)| (slug.as_str(), status.as_str()))
+        .collect();
+
+    // Iterate over all workstreams so every one appears in the recap
+    for ws in &plan.workstreams {
+        let status = status_map
+            .get(ws.slug.as_str())
+            .copied()
+            .unwrap_or("no status yet");
+        let _ = writeln!(out, "- {} ({}): {}", ws.slug, ws.title, status);
+    }
+    let _ = write!(
+        out,
+        "\n## How this conversation works\n\
+         {contract}",
+        contract = CONTRACT,
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bridge_core::{MissionId, PlanDraft, PlanDraftWorkstream, Severity, WorkstreamId};
+
+    #[test]
+    fn captain_confer_opening_carries_contract() {
+        let p = captain_confer_opening("Ship the frobnicator", "main branch: main");
+        assert!(p.contains("Ship the frobnicator"));
+        assert!(p.contains("main branch: main"));
+        assert!(p.contains("proposed_plan"));
+        assert!(p.contains("kebab-case"));
+        assert!(p.contains("self-contained"));
+        assert!(p.contains("full desired plan"), "amendment contract");
+    }
+
+    #[test]
+    fn captain_recap_lists_workstreams_and_statuses() {
+        let draft = PlanDraft {
+            workstreams: vec![PlanDraftWorkstream {
+                slug: "part-a".into(),
+                title: "Part A".into(),
+                description: "d".into(),
+                depends_on: vec![],
+            }],
+        };
+        let plan = MissionPlan::from_draft(draft, MissionId::new(), "m", "obj", "main").unwrap();
+        let p = captain_recap("obj", &plan, &[("part-a".into(), "Working".into())]);
+        assert!(p.contains("part-a"));
+        assert!(p.contains("Working"));
+        assert!(p.contains("obj"));
+    }
+
+    #[test]
+    fn captain_recap_includes_all_workstreams_even_without_status() {
+        let draft = PlanDraft {
+            workstreams: vec![
+                PlanDraftWorkstream {
+                    slug: "first-workstream".into(),
+                    title: "First Task".into(),
+                    description: "d1".into(),
+                    depends_on: vec![],
+                },
+                PlanDraftWorkstream {
+                    slug: "second-workstream".into(),
+                    title: "Second Task".into(),
+                    description: "d2".into(),
+                    depends_on: vec![],
+                },
+            ],
+        };
+        let plan = MissionPlan::from_draft(draft, MissionId::new(), "m", "obj", "main").unwrap();
+        // Only provide status for the first workstream
+        let p = captain_recap(
+            "obj",
+            &plan,
+            &[("first-workstream".into(), "In Progress".into())],
+        );
+        // Both workstreams must appear in the recap
+        assert!(p.contains("first-workstream (First Task): In Progress"));
+        assert!(
+            p.contains("second-workstream (Second Task): no status yet"),
+            "missing workstream must show 'no status yet'"
+        );
+    }
+
+    #[test]
+    fn constant_values_are_pinned() {
+        assert_eq!(PLAN_REJECTED_PREFIX, "PLAN REJECTED: ");
+        assert_eq!(AMENDMENT_REJECTED_PREFIX, "AMENDMENT REJECTED: ");
+        assert!(
+            SCHEMA_RETRY_MSG.contains("CaptainReply"),
+            "SCHEMA_RETRY_MSG must mention CaptainReply"
+        );
+        assert!(
+            SCHEMA_RETRY_MSG.contains("proposed_plan"),
+            "SCHEMA_RETRY_MSG must mention proposed_plan"
+        );
+    }
 
     fn spec() -> WorkstreamSpec {
         WorkstreamSpec {

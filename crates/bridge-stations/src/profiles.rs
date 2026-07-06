@@ -86,7 +86,10 @@ pub fn station_profile(station: Station, config: &BridgeConfig) -> StationProfil
                 append_system_prompt: "You are the Captain of a starship bridge crew running a \
                     software mission. You plan and delegate; you never edit files or run \
                     commands yourself. Decompose the objective into independent workstreams \
-                    that specialist agents execute in isolated git worktrees."
+                    that specialist agents execute in isolated git worktrees. You plan in \
+                    conversation with your commanding officer: discuss, question, and revise; \
+                    propose a plan only through the structured proposed_plan field; never \
+                    launch anything yourself."
                     .into(),
                 allowed_tools: allowed,
                 disallowed_tools: strings(&["Edit", "Write", "NotebookEdit", "Bash"]),
