@@ -1,11 +1,6 @@
 //! Apple-minimal design tokens and the egui theme they produce.
 //! One source of truth for both light and dark; see the design spec's
 //! colour tables.
-//!
-//! `ui.rs` starts consuming this module in Task 5; until then nothing
-//! outside `#[cfg(test)]` calls it, so allow the dead-code lint here
-//! rather than wire it in early.
-#![allow(dead_code)]
 
 use eframe::egui::{self, Color32};
 

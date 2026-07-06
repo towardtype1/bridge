@@ -31,7 +31,7 @@ mod wiring;
 use bridge_core::{
     BridgeCommand, BridgeConfig, BridgeEvent, MissionState, UserDecision, WorkstreamStatus,
 };
-use state::AppState;
+use state::{AppState, UiInputs};
 use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
 use wiring::Wiring;
@@ -50,12 +50,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => std::env::current_dir()?,
     };
     let config = load_config(&repo, args.config.as_deref())?;
+    // Grab the editor command before `config` is moved into the wiring; the
+    // GUI stores it in `AppState.ui` and spawns it directly for Open-in-editor.
+    let editor_command = config.ui.editor_command.clone();
 
     let wiring = wiring::build(repo, config)?;
     if args.headless_smoke {
         run_headless(wiring, args.objective)
     } else {
-        run_gui(wiring)
+        run_gui(wiring, editor_command)
     }
 }
 
@@ -127,14 +130,21 @@ struct BridgeApp {
 }
 
 impl BridgeApp {
-    fn new(mut wiring: Wiring) -> Self {
+    fn new(mut wiring: Wiring, editor_command: String) -> Self {
         let events_rx = wiring
             .bootstrap_rx
             .take()
             .expect("bootstrap receiver present on a fresh Wiring");
         let commands = wiring.commands.clone();
+        let state = AppState {
+            ui: UiInputs {
+                editor_command,
+                ..UiInputs::default()
+            },
+            ..AppState::default()
+        };
         Self {
-            state: AppState::default(),
+            state,
             events_rx,
             commands,
             out_commands: Vec::new(),
@@ -201,7 +211,10 @@ impl eframe::App for BridgeApp {
 
 use ui::egui;
 
-fn run_gui(wiring: Wiring) -> Result<(), Box<dyn std::error::Error>> {
+fn run_gui(
+    wiring: Wiring,
+    editor_command: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let events = wiring.events.clone();
     let runtime_handle = wiring.runtime.handle().clone();
     eframe::run_native(
@@ -209,7 +222,7 @@ fn run_gui(wiring: Wiring) -> Result<(), Box<dyn std::error::Error>> {
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
             wiring::spawn_repaint_forwarder(&runtime_handle, &events, Some(cc.egui_ctx.clone()));
-            Ok(Box::new(BridgeApp::new(wiring)))
+            Ok(Box::new(BridgeApp::new(wiring, editor_command)))
         }),
     )?;
     Ok(())

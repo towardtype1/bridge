@@ -41,6 +41,12 @@ pub struct UiInputs {
     pub selected: Option<WorkstreamId>,
     /// Per-ticket deny-reason text fields in the escalation modals.
     pub deny_reasons: HashMap<EscalationId, String>,
+    /// Editor launched by "Open in VS Code" (from `config.ui.editor_command`,
+    /// set once at startup). Empty falls back to "code".
+    pub editor_command: String,
+    /// Guardrails inspector: when true, also show routine Allow decisions;
+    /// otherwise only denials and escalations (exceptions-only).
+    pub show_all_guardrails: bool,
 }
 
 pub const MAX_FEED: usize = 2_000;
@@ -159,6 +165,12 @@ impl AppState {
     }
 
     /// Fraction of the total-turns budget used, clamped to 0..=1.
+    ///
+    /// Part of the reducer's query surface (kept as-is per the design spec)
+    /// and unit-tested below. The Apple-minimal GUI surfaces budget only on
+    /// the paused banner, so this is not read by the renderer today; hence the
+    /// allow. Remove it if a budget meter returns to the chrome.
+    #[allow(dead_code)]
     pub fn budget_fraction(&self) -> Option<f32> {
         self.budget.as_ref().map(|b| {
             if b.max_total_turns == 0 {
@@ -170,6 +182,9 @@ impl AppState {
     }
 
     /// Fraction of the wall-clock budget used, when one is configured.
+    ///
+    /// See [`Self::budget_fraction`] for why this carries an allow.
+    #[allow(dead_code)]
     pub fn wall_clock_fraction(&self) -> Option<f32> {
         let b = self.budget.as_ref()?;
         let max = b.max_wall_clock_secs?;
