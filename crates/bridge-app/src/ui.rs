@@ -171,6 +171,7 @@ fn status_color(status: &WorkstreamStatus, t: &Tokens) -> Color32 {
         | WorkstreamStatus::Failed { .. }
         | WorkstreamStatus::Flagged => t.crit,
         WorkstreamStatus::ReadyToMerge | WorkstreamStatus::Merged => t.good,
+        WorkstreamStatus::Cancelled => t.text_3,
     }
 }
 
