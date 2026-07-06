@@ -1044,20 +1044,7 @@ async fn resumed_plan_skips_captain_and_starts_working() {
 }
 
 // ---------------------------------------------------------------------------
-// red alert passthrough + battle report events
-
-#[tokio::test(start_paused = true)]
-async fn red_alert_command_reaches_tactical_and_the_bus() {
-    let deps = MockDeps::new();
-    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
-    rig.send(BridgeCommand::SetRedAlert(true)).await;
-    rig.wait_for("red alert on the bus", |e| {
-        matches!(e, BridgeEvent::RedAlert { active: true })
-    })
-    .await;
-    assert_eq!(deps.red_alert_calls.lock().unwrap().as_slice(), &[true]);
-    assert!(matches!(rig.shutdown().await, Ok(())));
-}
+// battle report events
 
 #[tokio::test(start_paused = true)]
 async fn battle_reports_are_filed_on_the_bus() {

@@ -49,9 +49,6 @@ pub enum BridgeEvent {
         tested_min: String,
         tested_max: String,
     },
-    RedAlert {
-        active: bool,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,7 +174,6 @@ pub enum DecisionKind {
 pub enum DecisionSource {
     PrimeDirective,
     ConfigRule,
-    RedAlert,
     DeepScan,
     User,
     /// No rule fired; the call passed through to the static permission gate.

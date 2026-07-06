@@ -147,8 +147,6 @@ pub struct TacticalConfig {
     pub allow_network_egress: bool,
     /// One-shot cheap claude review of suspicious-but-not-denied calls.
     pub deep_scan: bool,
-    /// Start missions with Red Alert active (every tool call escalates).
-    pub red_alert_default: bool,
     /// How long an escalation waits for the user before failing closed to
     /// deny, seconds. Must be comfortably below `claude.hook_timeout_secs`.
     pub escalation_timeout_secs: u64,
@@ -175,7 +173,6 @@ impl Default for TacticalConfig {
             ],
             allow_network_egress: false,
             deep_scan: false,
-            red_alert_default: false,
             escalation_timeout_secs: 540,
         }
     }

@@ -132,7 +132,6 @@ pub struct MockDeps {
     pub disarmed: Mutex<Vec<WorkstreamId>>,
     pub screened: Mutex<Vec<Order>>,
     pub screen_fn: Mutex<Option<ScreenFn>>,
-    pub red_alert_calls: Mutex<Vec<bool>>,
     pub resolved_hook_escalations: Mutex<Vec<(EscalationId, UserDecision)>>,
     token_counter: AtomicU32,
     // -- computer port -----------------------------------------------------
@@ -164,7 +163,6 @@ impl MockDeps {
             disarmed: Mutex::new(Vec::new()),
             screened: Mutex::new(Vec::new()),
             screen_fn: Mutex::new(None),
-            red_alert_calls: Mutex::new(Vec::new()),
             resolved_hook_escalations: Mutex::new(Vec::new()),
             token_counter: AtomicU32::new(0),
             recorded_missions: Mutex::new(Vec::new()),
@@ -488,10 +486,6 @@ impl TacticalPort for MockDeps {
             Some(f) => f(order),
             None => ScreenResult::Cleared,
         }
-    }
-
-    fn set_red_alert(&self, active: bool) {
-        self.red_alert_calls.lock().unwrap().push(active);
     }
 
     fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {

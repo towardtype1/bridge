@@ -413,10 +413,6 @@ where
                 workstream,
                 approved,
             } => self.confirm_merge(workstream, approved).await,
-            BridgeCommand::SetRedAlert(active) => {
-                self.shared.deps.set_red_alert(active);
-                self.shared.emit(BridgeEvent::RedAlert { active });
-            }
             BridgeCommand::ExtendBudget(ext) => self.extend_budget(ext).await,
             BridgeCommand::WindDown => {
                 self.winding_down = true;

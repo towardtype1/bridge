@@ -26,7 +26,6 @@ pub struct AppState {
     pub budget: Option<BudgetSnapshot>,
     pub rate_limit: Option<RateLimitState>,
     pub compat_warning: Option<(String, String, String)>,
-    pub red_alert: bool,
     pub battle_reports: Vec<BattleReport>,
     /// Ephemeral widget state (text buffers, selection). Not event-driven.
     pub ui: UiInputs,
@@ -128,7 +127,6 @@ impl AppState {
                 tested_min,
                 tested_max,
             } => self.compat_warning = Some((detected, tested_min, tested_max)),
-            BridgeEvent::RedAlert { active } => self.red_alert = active,
         }
     }
 
@@ -634,15 +632,6 @@ mod tests {
             s.compat_warning,
             Some(("2.3.0".into(), "2.1.190".into(), "2.2.99".into()))
         );
-    }
-
-    #[test]
-    fn red_alert_toggles() {
-        let mut s = AppState::default();
-        s.apply(BridgeEvent::RedAlert { active: true });
-        assert!(s.red_alert);
-        s.apply(BridgeEvent::RedAlert { active: false });
-        assert!(!s.red_alert);
     }
 
     #[test]

@@ -55,8 +55,6 @@ protected_path_patterns = [
 allow_network_egress = false
 # One-shot cheap claude review of suspicious-but-not-denied calls.
 deep_scan = false
-# Start missions with Red Alert active (EVERY tool call escalates).
-red_alert_default = false
 # How long an escalation waits for you before failing closed to deny.
 # Keep comfortably below claude.hook_timeout_secs.
 escalation_timeout_secs = 540

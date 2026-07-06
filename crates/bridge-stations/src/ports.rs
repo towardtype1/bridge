@@ -66,7 +66,6 @@ pub trait TacticalPort: Send + Sync + 'static {
     fn arm_workstream(&self, id: WorkstreamId, ctx: WorkstreamCtx) -> (String, String);
     fn disarm_workstream(&self, id: WorkstreamId);
     fn screen_order(&self, order: &Order, station_allowed_tools: &[String]) -> ScreenResult;
-    fn set_red_alert(&self, active: bool);
     /// Resolve a mid-run hook (tool-call) escalation held open on the
     /// control server's broker. Ids unknown to the broker are ignored there
     /// (the hook already failed closed). Default no-op keeps mocks that
@@ -206,9 +205,6 @@ impl TacticalPort for LiveDeps {
     }
     fn screen_order(&self, order: &Order, tools: &[String]) -> ScreenResult {
         bridge_tactical::screen_order(order, tools)
-    }
-    fn set_red_alert(&self, active: bool) {
-        self.policy.set_red_alert(active);
     }
     fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {
         self.broker.resolve(id, decision);

@@ -20,7 +20,6 @@ pub enum BridgeCommand {
         workstream: WorkstreamId,
         approved: bool,
     },
-    SetRedAlert(bool),
     /// Raise budget ceilings on a paused mission.
     ExtendBudget(BudgetExtension),
     /// Finish in-flight orders, produce a status summary, stop.

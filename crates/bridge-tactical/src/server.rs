@@ -385,15 +385,13 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// The policy engine names rules with `prime.` / `config.` / `red_alert`
-/// prefixes; map them onto the event bus decision source.
+/// The policy engine names rules with `prime.` / `config.` prefixes; map
+/// them onto the event bus decision source.
 fn source_for_rule(rule: &str) -> DecisionSource {
     if rule.starts_with("prime") {
         DecisionSource::PrimeDirective
     } else if rule.starts_with("config") {
         DecisionSource::ConfigRule
-    } else if rule.starts_with("red_alert") {
-        DecisionSource::RedAlert
     } else if rule.starts_with("deep_scan") {
         DecisionSource::DeepScan
     } else {

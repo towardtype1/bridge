@@ -5,12 +5,11 @@ use bridge_core::{TacticalConfig, WorkstreamId};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, RwLock};
 
-// Rule identifiers. The `prime.` / `config.` / `red_alert` prefixes are
-// load-bearing: the control server derives the `DecisionSource` for the
-// event bus from them.
+// Rule identifiers. The `prime.` / `config.` prefixes are load-bearing:
+// the control server derives the `DecisionSource` for the event bus from
+// them.
 const RULE_UNREGISTERED: &str = "prime.unregistered_workstream";
 const RULE_WORKTREE_ESCAPE: &str = "prime.worktree_escape";
 const RULE_WRITE_ONLY_UNDER: &str = "prime.write_only_under";
@@ -24,7 +23,6 @@ const RULE_EGRESS: &str = "config.network_egress";
 const RULE_GIT_PUSH: &str = "config.git_push";
 const RULE_MCP_WRITE: &str = "config.mcp_write";
 const RULE_MCP_DELETE: &str = "config.mcp_delete";
-const RULE_RED_ALERT: &str = "red_alert";
 
 /// Hardcoded credential/secret path patterns: prime directives, active even
 /// when `TacticalConfig.protected_path_patterns` is empty.
@@ -174,7 +172,6 @@ pub enum PolicyVerdict {
 
 pub struct PolicyEngine {
     config: TacticalConfig,
-    red_alert: AtomicBool,
     workstreams: RwLock<HashMap<WorkstreamId, WorkstreamCtx>>,
     destructive: Vec<Regex>,
     protected: Vec<Regex>,
@@ -195,7 +192,6 @@ impl PolicyEngine {
             .map(|p| Regex::new(p))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            red_alert: AtomicBool::new(config.red_alert_default),
             config,
             workstreams: RwLock::new(HashMap::new()),
             destructive,
@@ -215,14 +211,6 @@ impl PolicyEngine {
             .write()
             .expect("workstream registry poisoned")
             .remove(&id);
-    }
-
-    pub fn set_red_alert(&self, active: bool) {
-        self.red_alert.store(active, Ordering::SeqCst);
-    }
-
-    pub fn red_alert(&self) -> bool {
-        self.red_alert.load(Ordering::SeqCst)
     }
 
     /// Adjudicate one hook payload for a registered workstream.
@@ -246,8 +234,7 @@ impl PolicyEngine {
     ///   always escalates (remote push is never automatic).
     /// - MCP: `mcp__linear__*` reads pass; writes escalate unless they
     ///   match an expected-sync shape the caller registered; deletes
-    ///   always escalate; under Red Alert all MCP writes escalate.
-    /// - RED ALERT: anything not already denied escalates.
+    ///   always escalate.
     /// - Otherwise `Pass`, with `suspicious` true for calls that matched a
     ///   "watch" heuristic (base64/eval in Bash, unusually long single
     ///   commands, file writes to dotfiles).
@@ -274,21 +261,7 @@ impl PolicyEngine {
             return PolicyVerdict::Pass { suspicious: false };
         }
 
-        let verdict = self.adjudicate_pre_tool_use(&ctx, payload);
-        if self.red_alert() {
-            match verdict {
-                PolicyVerdict::Pass { .. } => PolicyVerdict::Escalate {
-                    question: format!(
-                        "Red Alert: allow {}?",
-                        describe_call(payload.tool_name.as_deref(), payload.tool_input.as_ref())
-                    ),
-                    rule: RULE_RED_ALERT.into(),
-                },
-                other => other,
-            }
-        } else {
-            verdict
-        }
+        self.adjudicate_pre_tool_use(&ctx, payload)
     }
 
     fn adjudicate_pre_tool_use(&self, ctx: &WorkstreamCtx, payload: &HookPayload) -> PolicyVerdict {
@@ -992,25 +965,6 @@ fn snippet(cmd: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-fn describe_call(tool: Option<&str>, input: Option<&serde_json::Value>) -> String {
-    let tool = tool.unwrap_or("<unnamed tool>");
-    let detail = input
-        .map(|i| {
-            i.get("command")
-                .or_else(|| i.get("file_path"))
-                .or_else(|| i.get("notebook_path"))
-                .and_then(|v| v.as_str())
-                .map(|s| snippet(s).into_owned())
-                .unwrap_or_else(|| snippet(&i.to_string()).into_owned())
-        })
-        .unwrap_or_default();
-    if detail.is_empty() {
-        format!("`{tool}`")
-    } else {
-        format!("`{tool}` ({detail})")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1655,57 +1609,6 @@ mod tests {
         let (eng, ws) = engine(TacticalConfig::default());
         let p = payload("PreToolUse", Some("mcp__linear__delete_issue"), json!({}));
         assert_escalate(&eng.decide(ws, &p), "config.mcp_delete", "delete");
-        // Red alert must not downgrade or bypass the delete escalation.
-        eng.set_red_alert(true);
-        assert_escalate(
-            &eng.decide(ws, &p),
-            "config.mcp_delete",
-            "delete under red alert",
-        );
-    }
-
-    // ------------------------------------------------------------------
-    // Red alert.
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn red_alert_escalates_everything_not_denied() {
-        let (eng, ws) = engine(TacticalConfig::default());
-        eng.set_red_alert(true);
-        assert!(eng.red_alert());
-        // Reads escalate.
-        let v = eng.decide(ws, &file_tool("Read", "/tmp/lab/wt/src/main.rs"));
-        assert_escalate(&v, "red_alert", "Read under red alert");
-        // Benign bash escalates.
-        let v = eng.decide(ws, &bash("echo hi"));
-        assert_escalate(&v, "red_alert", "echo under red alert");
-        // Denies stay denies.
-        let v = eng.decide(ws, &file_tool("Edit", "/tmp/other/x.rs"));
-        assert_deny(&v, "prime", "worktree escape under red alert");
-        let v = eng.decide(ws, &bash("rm -rf /"));
-        assert_deny(&v, "prime", "rm -rf / under red alert");
-    }
-
-    #[test]
-    fn red_alert_clears() {
-        let (eng, ws) = engine(TacticalConfig::default());
-        eng.set_red_alert(true);
-        eng.set_red_alert(false);
-        assert!(!eng.red_alert());
-        let v = eng.decide(ws, &bash("echo hi"));
-        assert_pass(&v, false, "after red alert cleared");
-    }
-
-    #[test]
-    fn red_alert_default_comes_from_config() {
-        let cfg = TacticalConfig {
-            red_alert_default: true,
-            ..TacticalConfig::default()
-        };
-        let (eng, ws) = engine(cfg);
-        assert!(eng.red_alert());
-        let v = eng.decide(ws, &bash("echo hi"));
-        assert_escalate(&v, "red_alert", "red alert from config default");
     }
 
     // ------------------------------------------------------------------
@@ -1744,9 +1647,6 @@ mod tests {
         assert_pass(&eng.decide(ws, &post), false, "PostToolUse");
         let stop = payload("Stop", None, json!(null));
         assert_pass(&eng.decide(ws, &stop), false, "Stop");
-        // Red alert does not turn observability hooks into escalations.
-        eng.set_red_alert(true);
-        assert_pass(&eng.decide(ws, &stop), false, "Stop under red alert");
     }
 
     #[test]

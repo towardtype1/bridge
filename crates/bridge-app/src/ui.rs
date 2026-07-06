@@ -3,7 +3,7 @@
 //! Layout:
 //! - Header strip: mission state chip, budget bars (turns, wall clock,
 //!   cost), rate-limit countdown banner (retry-at), compat warning banner
-//!   with "proceed anyway", RED ALERT toggle (prominent, red when armed).
+//!   with "proceed anyway".
 //! - Left sidebar: workstreams with status badges; click to select.
 //! - Center: selected workstream detail - live agent output feed, tool
 //!   calls, turn history, filed battle reports.
@@ -57,7 +57,6 @@ pub fn draw(ctx: &egui::Context, state: &mut AppState, out_commands: &mut Vec<Br
 fn draw_in(ui: &mut egui::Ui, state: &mut AppState, out_commands: &mut Vec<BridgeCommand>) {
     let ctx = ui.ctx().clone();
     apply_theme(&ctx);
-    red_alert_banner(ui, state);
     header(ui, state, out_commands);
     bottom_bar(ui, state, out_commands);
     left_sidebar(ui, state);
@@ -84,23 +83,6 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
-fn red_alert_banner(ui: &mut egui::Ui, state: &AppState) {
-    if !state.red_alert {
-        return;
-    }
-    egui::Panel::top("red_alert_banner")
-        .frame(egui::Frame::new().fill(ALERT_RED).inner_margin(6.0))
-        .show(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new("RED ALERT - every tool call escalates to you")
-                        .color(Color32::WHITE)
-                        .strong(),
-                );
-            });
-        });
-}
-
 fn header(ui: &mut egui::Ui, state: &mut AppState, out: &mut Vec<BridgeCommand>) {
     egui::Panel::top("header").show(ui, |ui| {
         ui.add_space(4.0);
@@ -117,26 +99,6 @@ fn header(ui: &mut egui::Ui, state: &mut AppState, out: &mut Vec<BridgeCommand>)
             if let Some(detail) = &state.mission_detail {
                 ui.label(RichText::new(detail).color(DIM_GRAY));
             }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let alert_label = if state.red_alert {
-                    RichText::new("RED ALERT: ON")
-                        .color(Color32::WHITE)
-                        .strong()
-                } else {
-                    RichText::new("RED ALERT: OFF").color(ALERT_RED)
-                };
-                let button = egui::Button::new(alert_label).fill(if state.red_alert {
-                    ALERT_RED
-                } else {
-                    ui.visuals().widgets.inactive.bg_fill
-                });
-                if ui.add(button).clicked() {
-                    let next = !state.red_alert;
-                    state.red_alert = next;
-                    out.push(BridgeCommand::SetRedAlert(next));
-                }
-            });
         });
 
         budget_row(ui, state, out);

@@ -50,9 +50,6 @@ pub fn build(repo: PathBuf, config: BridgeConfig) -> Result<Wiring, Box<dyn std:
 
     // 5b. Tactical: policy engine, escalation broker, control server.
     let policy = Arc::new(PolicyEngine::new(config.tactical.clone())?);
-    if config.tactical.red_alert_default {
-        policy.set_red_alert(true);
-    }
     let broker = Arc::new(EscalationBroker::new());
     let server = ControlServer::new(
         Arc::clone(&policy),
