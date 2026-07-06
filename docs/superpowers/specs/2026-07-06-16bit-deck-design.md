@@ -108,3 +108,10 @@ egui 0.35 notes from the previous redesign apply (unified `Panel`, `CornerRadius
 B replaces only `center()`.
 Sidebar, inspector, composer, banners, and all commands and events are untouched.
 When C lands, the egui windows above are progressively replaced by pixel-idiom surfaces, and the remaining Apple-minimal chrome retires with them.
+
+### Addendum (2026-07-06, user direction during execution)
+
+The deck fills the entire window within sub-project B - the staged "panels around the deck" interim is dropped.
+The left sidebar and right inspector are removed in B; their content stays reachable deck-natively: workstreams via console clicks, guardrails via the tactical rail window, and the viewscreen becomes clickable, opening a mission-status window (mission title and state, merge queue, budget).
+The bottom composer and the paused/compat banners remain the only non-deck chrome until C, because the composer is the sole conversation input surface before C's dialogue box exists.
+When the A and B branches merge, A's interim captain view renders inside a window opened by `HailCaptain` over the full-page deck (it no longer has a panel fallback to live in).
