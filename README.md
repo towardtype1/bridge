@@ -52,23 +52,25 @@ The stations orchestration is decoupled from the live crates by four port traits
 
 ## Quickstart
 
+Build once, then run Bridge from inside the repository you want it to work on. With no `--repo`, Bridge targets the current directory:
+
 ```sh
 cargo build --release
 
-# Point Bridge at the repository a mission should work on.
-cp bridge.example.toml /path/to/target-repo/bridge.toml   # optional; defaults are built in
-./target/release/bridge --repo /path/to/target-repo
+cd /path/to/your/repo
+/path/to/bridge/target/release/bridge     # targets the current directory
 ```
+
+(Put the release binary on your `PATH` and it is just `bridge`.) To target a different repository without `cd`-ing into it, pass `--repo <path>`. Configuration is optional - drop a `bridge.toml` in the target repo (`cp bridge.example.toml bridge.toml`) to override models, budgets, or policy; otherwise built-in defaults apply.
 
 Type a mission objective in the GUI. The Captain plans it, workstreams run concurrently, escalations and merge confirmations appear as prompts you answer in the GUI. **Red Alert** (a header toggle) escalates every tool call to you.
 
 ### Headless mode
 
-For CI or scripted verification, drive one mission without a display. It prints every event as a JSON line and auto-approves escalations and merges:
+For CI or scripted verification, drive one mission without a display. It prints every event as a JSON line and auto-approves escalations and merges (again, `--repo` defaults to the current directory):
 
 ```sh
-./target/release/bridge --repo /path/to/target-repo --headless-smoke \
-  "Add a CONTRIBUTING.md with a short contribution guide"
+bridge --headless-smoke "Add a CONTRIBUTING.md with a short contribution guide"
 ```
 
 ## Configuration

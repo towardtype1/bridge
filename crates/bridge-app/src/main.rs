@@ -2,6 +2,9 @@
 //!
 //! `bridge [--repo <path>] [--config <bridge.toml>] [--headless-smoke] [objective]`
 //!
+//! `--repo` defaults to the current working directory, so running `bridge`
+//! from inside a repository targets that repository with no arguments.
+//!
 //! Boot order:
 //! 1. tracing init; config load (default `bridge.toml` in --repo, else
 //!    built-in defaults),
