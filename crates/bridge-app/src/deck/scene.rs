@@ -3,7 +3,7 @@
 
 use crate::deck::sprites::{ConsoleVisual, console_visual};
 use crate::state::AppState;
-use bridge_core::{MissionState, WorkstreamId, WorkstreamStatus};
+use bridge_core::{DecisionKind, MissionState, WorkstreamId, WorkstreamStatus};
 use std::collections::HashSet;
 
 pub const NATIVE_W: usize = 480;
@@ -166,8 +166,73 @@ impl SceneState {
             .values()
             .any(|p| matches!(p.status, Some(WorkstreamStatus::UnderTest { .. })));
 
-        // Task 4 inserts edge-triggered transients here.
-        let _ = (dt, reduce_motion);
+        // --- edge-triggered transients ------------------------------------
+        for (i, id) in app.workstream_order.iter().take(MAX_CONSOLES).enumerate() {
+            if self.seen.insert(*id) {
+                let target = stand_point(i);
+                let start = ((LIFT.x + 9) as f32, (LIFT.y + 8) as f32);
+                self.agents.push(if reduce_motion {
+                    Agent {
+                        ws: *id,
+                        x: target.0,
+                        y: target.1,
+                        path: Vec::new(),
+                        phase: AgentPhase::Seated,
+                        alarm_until: 0.0,
+                        hair: i + 1,
+                    }
+                } else {
+                    Agent {
+                        ws: *id,
+                        x: start.0,
+                        y: start.1,
+                        path: vec![(start.0, WALK_Y), (target.0, WALK_Y), target],
+                        phase: AgentPhase::Walking,
+                        alarm_until: 0.0,
+                        hair: i + 1,
+                    }
+                });
+            }
+
+            let status = app.workstreams[id].status.clone();
+            let prev = self.prev_status.get(id);
+            let became = |m: fn(&WorkstreamStatus) -> bool| {
+                status.as_ref().is_some_and(m) && !prev.is_some_and(m)
+            };
+            if became(|s| matches!(s, WorkstreamStatus::Merged))
+                && let Some(a) = self.agents.iter_mut().find(|a| a.ws == *id)
+            {
+                if reduce_motion {
+                    a.phase = AgentPhase::Gone;
+                } else {
+                    a.phase = AgentPhase::Leaving;
+                    a.path = vec![
+                        (a.x, WALK_Y),
+                        ((LIFT.x + 9) as f32, WALK_Y),
+                        ((LIFT.x + 9) as f32, (LIFT.y + 8) as f32),
+                    ];
+                }
+            }
+            if became(|s| matches!(s, WorkstreamStatus::Breached { .. }))
+                && let Some(a) = self.agents.iter_mut().find(|a| a.ws == *id)
+            {
+                a.alarm_until = now + 3.0;
+            }
+            if let Some(s) = status {
+                self.prev_status.insert(*id, s);
+            }
+        }
+
+        if app.tactical_feed.len() > self.last_hook_len
+            && let Some(newest) = app.tactical_feed.last()
+            && newest.decision != DecisionKind::Allow
+        {
+            self.tactical_blink_until = now + 1.5;
+        }
+        self.last_hook_len = app.tactical_feed.len();
+
+        self.advance_agents(dt);
+        self.agents.retain(|a| a.phase != AgentPhase::Gone);
     }
 
     pub fn any_motion(&self) -> bool {
@@ -175,6 +240,36 @@ impl SceneState {
             matches!(a.phase, AgentPhase::Walking | AgentPhase::Leaving)
                 || a.alarm_until > self.last_now
         })
+    }
+
+    fn advance_agents(&mut self, dt: f32) {
+        for a in &mut self.agents {
+            if !matches!(a.phase, AgentPhase::Walking | AgentPhase::Leaving) {
+                continue;
+            }
+            let mut budget = WALK_SPEED * dt;
+            while budget > 0.0 {
+                let Some(&(tx, ty)) = a.path.first() else {
+                    a.phase = match a.phase {
+                        AgentPhase::Leaving => AgentPhase::Gone,
+                        _ => AgentPhase::Seated,
+                    };
+                    break;
+                };
+                let (dx, dy) = (tx - a.x, ty - a.y);
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= budget {
+                    a.x = tx;
+                    a.y = ty;
+                    a.path.remove(0);
+                    budget -= dist;
+                } else {
+                    a.x += dx / dist * budget;
+                    a.y += dy / dist * budget;
+                    budget = 0.0;
+                }
+            }
+        }
     }
 }
 
@@ -249,5 +344,113 @@ mod tests {
                 assert!(disjoint_x, "consoles {i} and {j} overlap");
             }
         }
+    }
+
+    #[test]
+    fn provision_spawns_walking_agent_whose_path_ends_at_console() {
+        let app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, false);
+        assert_eq!(scene.agents.len(), 1);
+        let a = &scene.agents[0];
+        assert_eq!(a.phase, AgentPhase::Walking);
+        assert_eq!(*a.path.last().unwrap(), stand_point(0));
+        // starts at the turbolift
+        assert!(LIFT.contains(a.x, a.y));
+    }
+
+    #[test]
+    fn reduce_motion_places_agent_instantly() {
+        let app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true);
+        let a = &scene.agents[0];
+        assert_eq!(a.phase, AgentPhase::Seated);
+        assert_eq!((a.x, a.y), stand_point(0));
+    }
+
+    #[test]
+    fn walking_agent_reaches_console_over_time() {
+        let app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, false);
+        // Walk far longer than any path needs at 34 px/s.
+        let mut t = 0.0;
+        for _ in 0..600 {
+            t += 0.1;
+            scene.sync(&app, t, false);
+        }
+        let a = &scene.agents[0];
+        assert_eq!(a.phase, AgentPhase::Seated);
+        assert_eq!((a.x, a.y), stand_point(0));
+    }
+
+    #[test]
+    fn merge_sends_agent_leaving_then_gone() {
+        let mut app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true); // seated instantly
+        let id = app.workstream_order[0];
+        app.apply(BridgeEvent::WorkstreamStatus {
+            id,
+            status: WorkstreamStatus::Merged,
+        });
+        scene.sync(&app, 1.0, true);
+        assert!(scene.agents.is_empty(), "reduce_motion removes instantly");
+
+        // And with motion: phase becomes Leaving.
+        let mut app2 = app_with(&[WorkstreamStatus::Working]);
+        let mut scene2 = SceneState::default();
+        scene2.sync(&app2, 0.0, false);
+        let mut t = 0.0;
+        for _ in 0..600 {
+            t += 0.1;
+            scene2.sync(&app2, t, false);
+        }
+        let id2 = app2.workstream_order[0];
+        app2.apply(BridgeEvent::WorkstreamStatus {
+            id: id2,
+            status: WorkstreamStatus::Merged,
+        });
+        scene2.sync(&app2, t + 0.1, false);
+        assert_eq!(scene2.agents[0].phase, AgentPhase::Leaving);
+    }
+
+    #[test]
+    fn breach_raises_alarm_that_expires() {
+        let mut app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true);
+        let id = app.workstream_order[0];
+        app.apply(BridgeEvent::WorkstreamStatus {
+            id,
+            status: WorkstreamStatus::Breached { round: 1 },
+        });
+        scene.sync(&app, 1.0, true);
+        assert!(scene.agents[0].alarm_until > 1.0);
+        scene.sync(&app, 10.0, true);
+        assert!(scene.agents[0].alarm_until < 10.0, "alarm expired");
+    }
+
+    #[test]
+    fn hook_denial_blinks_tactical() {
+        use bridge_core::{DecisionKind, DecisionSource, HookDecisionRecord};
+        let mut app = app_with(&[WorkstreamStatus::Working]);
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true);
+        assert_eq!(scene.tactical_blink_until, 0.0);
+        app.apply(BridgeEvent::HookDecision(HookDecisionRecord {
+            timestamp: chrono::Utc::now(),
+            workstream: app.workstream_order[0],
+            hook_event: "PreToolUse".into(),
+            tool_name: Some("Bash".into()),
+            decision: DecisionKind::Deny,
+            reason: Some("outside worktree".into()),
+            rule: "path-policy".into(),
+            source: DecisionSource::PrimeDirective,
+            latency_ms: 3,
+        }));
+        scene.sync(&app, 2.0, true);
+        assert!(scene.tactical_blink_until > 2.0);
     }
 }
