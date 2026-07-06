@@ -177,35 +177,12 @@ pub fn decommission<G: GitPort, T: TacticalPort>(
     }
 }
 
-/// Locate the bundled helper binary: next to the current executable
-/// (release layout) or under CARGO target dir (dev). Errors if missing so
-/// missions cannot start without the veto path.
+/// Locate the hook entry point: the running `bridge` binary itself, since
+/// it dispatches to the fail-closed forwarder via its hidden `__hook`
+/// subcommand. Errors if the current exe cannot be resolved, so missions
+/// cannot start without the veto path.
 pub fn locate_helper() -> Result<PathBuf, EngineeringError> {
-    let exe = std::env::current_exe().map_err(EngineeringError::Install)?;
-    let name = if cfg!(windows) {
-        "bridge-hook-helper.exe"
-    } else {
-        "bridge-hook-helper"
-    };
-    let mut candidates = Vec::new();
-    if let Some(dir) = exe.parent() {
-        // Release layout: helper installed next to the app binary.
-        candidates.push(dir.join(name));
-        // Dev layout: test binaries live in target/<profile>/deps; built
-        // binaries land one level up in target/<profile>.
-        candidates.push(dir.join("..").join(name));
-    }
-    for candidate in &candidates {
-        if candidate.is_file() {
-            return Ok(candidate
-                .canonicalize()
-                .unwrap_or_else(|_| candidate.clone()));
-        }
-    }
-    Err(EngineeringError::Install(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        format!("bridge-hook-helper not found; looked at {candidates:?}"),
-    )))
+    std::env::current_exe().map_err(EngineeringError::Install)
 }
 
 #[cfg(test)]
@@ -394,23 +371,11 @@ mod tests {
     }
 
     #[test]
-    fn locate_helper_finds_dev_layout_and_errors_when_missing() {
-        // Test binaries live in target/<dir>/debug/deps; the dev candidate
-        // is target/<dir>/debug/bridge-hook-helper.
+    fn locate_helper_returns_the_current_exe() {
+        // The bridge binary is its own hook entry point now: no sibling
+        // binary to locate, just the running executable's own path.
         let exe = std::env::current_exe().unwrap();
-        let deps_dir = exe.parent().unwrap().to_owned();
-        let sibling = deps_dir.join("bridge-hook-helper");
-        let dev = deps_dir.join("..").join("bridge-hook-helper");
-
-        // Clean slate: neither candidate present -> error.
-        let _ = std::fs::remove_file(&sibling);
-        let _ = std::fs::remove_file(&dev);
-        assert!(matches!(locate_helper(), Err(EngineeringError::Install(_))));
-
-        // Fake helper in the dev location -> found and canonicalized.
-        std::fs::write(&dev, b"#!/bin/sh\n").unwrap();
-        let found = locate_helper().expect("helper located");
-        assert_eq!(found, dev.canonicalize().unwrap());
-        let _ = std::fs::remove_file(&dev);
+        let found = locate_helper().expect("locate_helper");
+        assert_eq!(found, exe);
     }
 }

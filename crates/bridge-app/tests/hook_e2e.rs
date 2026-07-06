@@ -1,9 +1,9 @@
-//! End-to-end tests driving the real bridge-hook-helper binary.
+//! End-to-end tests driving the real `bridge __hook` subcommand.
 //!
 //! A stub HTTP server (plain std::net::TcpListener in a thread) plays the
-//! control server. Every failure-path test asserts exit code 0: the helper
-//! is fail-closed, and a non-zero exit would surface as a hook error
-//! instead of the deny decision it printed.
+//! control server. Every failure-path test asserts exit code 0: the hook
+//! forwarder is fail-closed, and a non-zero exit would surface as a hook
+//! error instead of the deny decision it printed.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const BIN: &str = env!("CARGO_BIN_EXE_bridge-hook-helper");
+const BIN: &str = env!("CARGO_BIN_EXE_bridge");
 
 const PRETOOLUSE: &str = include_str!("fixtures/hook_pretooluse.json");
 const POSTTOOLUSE: &str = include_str!("fixtures/hook_posttooluse.json");
@@ -99,7 +99,7 @@ fn refused_url() -> String {
     format!("http://{addr}")
 }
 
-/// Runs the helper binary with a scrubbed BRIDGE_* environment plus the
+/// Runs `bridge __hook <args>` with a scrubbed BRIDGE_* environment plus the
 /// given env/args, piping `stdin_bytes` to stdin.
 fn run_helper(stdin_bytes: &[u8], envs: &[(&str, &str)], args: &[&str]) -> Output {
     let mut cmd = Command::new(BIN);
@@ -114,18 +114,19 @@ fn run_helper(stdin_bytes: &[u8], envs: &[(&str, &str)], args: &[&str]) -> Outpu
     for (key, value) in envs {
         cmd.env(key, value);
     }
+    cmd.arg("__hook");
     cmd.args(args);
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn helper");
+    let mut child = cmd.spawn().expect("spawn bridge __hook");
     child
         .stdin
         .take()
         .expect("stdin handle")
         .write_all(stdin_bytes)
         .expect("write stdin");
-    child.wait_with_output().expect("wait for helper")
+    child.wait_with_output().expect("wait for bridge __hook")
 }
 
 fn base_env(url: &str) -> Vec<(&str, &str)> {
@@ -141,7 +142,7 @@ fn assert_pretooluse_deny(output: &Output) {
     assert_eq!(
         output.status.code(),
         Some(0),
-        "helper must exit 0, stderr: {}",
+        "bridge __hook must exit 0, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let decision: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
@@ -294,7 +295,7 @@ fn posttooluse_with_missing_env_prints_empty_object() {
 #[test]
 fn garbage_stdin_denies_pretooluse_style() {
     // Binary garbage: invalid UTF-8, certainly not JSON. No server needed;
-    // the helper must not even try to forward it.
+    // the hook forwarder must not even try to forward it.
     let garbage: &[u8] = &[0xff, 0xfe, 0x00, 0x9b, 0x13, 0x37, 0xde, 0xad];
     let url = refused_url();
     let output = run_helper(garbage, &base_env(&url), &[]);

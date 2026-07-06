@@ -37,6 +37,16 @@ use tokio::sync::{broadcast, mpsc};
 use wiring::Wiring;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Claude Code execs `bridge __hook` once per PreToolUse/PostToolUse/Stop
+    // hook call in a Bridge-managed worktree. Dispatch to the fail-closed
+    // hook forwarder before any tracing/arg-parsing/eframe setup, and
+    // always return Ok so the process exits 0 - the printed JSON, not the
+    // exit code, carries the allow/deny decision.
+    if std::env::args().nth(1).as_deref() == Some("__hook") {
+        bridge_hook_helper::run();
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

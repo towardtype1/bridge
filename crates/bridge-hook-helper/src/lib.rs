@@ -1,18 +1,21 @@
 //! bridge-hook-helper: the fail-closed hook forwarder.
 //!
-//! Claude Code runs this binary for PreToolUse/PostToolUse/Stop hooks in
-//! Bridge-managed worktrees. It:
+//! A library, not a binary: the `bridge` binary dispatches to `run()` from
+//! its hidden `bridge __hook` subcommand (see `bridge-app`'s `main()`), so
+//! Claude Code only ever needs to exec one binary. Claude Code runs
+//! `bridge __hook` for PreToolUse/PostToolUse/Stop hooks in Bridge-managed
+//! worktrees. `run()`:
 //! 1. reads the hook JSON payload from stdin (hard cap 10 MiB),
 //! 2. reads `BRIDGE_SERVER_URL`, `BRIDGE_WORKSTREAM_ID`, `BRIDGE_TOKEN`
-//!    from env (argv overrides: `--server-url`, `--workstream`, `--token`),
+//!    from env (argv overrides: `--server-url`, `--workstream`, `--token`;
+//!    a leading `__hook` token matches none of these and is ignored),
 //! 3. POSTs `{workstream_id, payload}` to `<url>/hook` with
 //!    `Authorization: Bearer <token>`, timeout `BRIDGE_HELPER_TIMEOUT_MS`
 //!    (default 570_000 ms; must stay under the installed hook timeout),
-//! 4. prints the response body verbatim to stdout and exits 0.
+//! 4. prints the response body verbatim to stdout.
 //!
 //! FAIL CLOSED: on ANY failure (missing env, unreadable stdin, connect
-//! error, non-2xx, timeout, empty body) it prints a deny decision itself
-//! and still exits 0 so the deny JSON is honored:
+//! error, non-2xx, timeout, empty body) it prints a deny decision itself:
 //! - PreToolUse payloads: permissionDecision "deny" with the failure
 //!   reason (the run continues, the tool call does not).
 //! - PostToolUse/Stop payloads (nothing to gate): `{}` so observability
@@ -23,7 +26,10 @@
 //! event names also get the deny: only PostToolUse/Stop are known-safe
 //! to pass through.
 //!
-//! Keep this binary tiny and fast: no tokio, no async, blocking ureq only.
+//! `run()` never panics out and never exits the process; the always-exit-0
+//! guarantee is the caller's job (`bridge`'s `main()` returns `Ok(())`
+//! immediately after calling `run()`). Keep this path tiny and fast: no
+//! tokio, no async, blocking ureq only.
 
 use std::io::Read;
 use std::time::Duration;
@@ -41,25 +47,29 @@ const DEFAULT_TIMEOUT_MS: u64 = 570_000;
 /// Hard cap on the stdin payload size.
 const STDIN_CAP_BYTES: u64 = 10 * 1024 * 1024;
 
-fn main() {
+/// Entry point called from `bridge __hook`. Reads argv (skipping the
+/// process name; a leading `__hook` token is present and simply unmatched
+/// by `parse_args`), runs the full flow, and prints the resulting bytes to
+/// stdout. Never calls `std::process::exit`: the caller must exit 0
+/// unconditionally so the printed JSON is honored as the decision.
+pub fn run() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // Belt and braces: even an unexpected panic must not turn into a
     // non-zero exit, because that would surface as a hook error instead
     // of a decision. catch_unwind keeps the fail-closed promise.
-    let output = std::panic::catch_unwind(|| run(&args))
+    let output = std::panic::catch_unwind(|| run_flow(&args))
         .unwrap_or_else(|_| deny_output("bridge-hook-helper: internal panic"));
 
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&output);
     let _ = stdout.flush();
-    std::process::exit(0);
 }
 
 /// Full helper flow; returns exactly the bytes to print on stdout.
 /// Never panics on malformed input: every failure becomes a fallback
 /// decision shaped by the payload's `hook_event_name`.
-fn run(args: &[String]) -> Vec<u8> {
+fn run_flow(args: &[String]) -> Vec<u8> {
     let overrides = parse_args(args);
 
     let payload = match read_stdin_payload() {

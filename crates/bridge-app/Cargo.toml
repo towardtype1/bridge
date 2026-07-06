@@ -15,6 +15,7 @@ bridge-compat.workspace = true
 bridge-engine.workspace = true
 bridge-git.workspace = true
 bridge-tactical.workspace = true
+bridge-hook-helper.workspace = true
 bridge-computer.workspace = true
 bridge-stations.workspace = true
 eframe.workspace = true

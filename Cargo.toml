@@ -24,6 +24,7 @@ bridge-compat = { path = "crates/bridge-compat" }
 bridge-engine = { path = "crates/bridge-engine" }
 bridge-git = { path = "crates/bridge-git" }
 bridge-tactical = { path = "crates/bridge-tactical" }
+bridge-hook-helper = { path = "crates/bridge-hook-helper" }
 bridge-computer = { path = "crates/bridge-computer" }
 bridge-stations = { path = "crates/bridge-stations" }
 

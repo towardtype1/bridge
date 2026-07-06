@@ -566,6 +566,7 @@ dependencies = [
  "bridge-core",
  "bridge-engine",
  "bridge-git",
+ "bridge-hook-helper",
  "bridge-stations",
  "bridge-tactical",
  "chrono",
@@ -647,7 +648,6 @@ version = "0.1.0"
 dependencies = [
  "bridge-core",
  "serde_json",
- "tempfile",
  "ureq",
 ]
 

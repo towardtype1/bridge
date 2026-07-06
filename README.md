@@ -24,7 +24,7 @@ Mission objective
 ## Why it is built this way
 
 - **No direct API calls.** Each agent turn spawns `claude -p --output-format stream-json --verbose` inside the workstream's worktree, using your local subscription auth. `ANTHROPIC_API_KEY` and inherited `CLAUDE_*` session vars are scrubbed from every child so subscription OAuth is used; `--bare` is never passed (it would skip OAuth). Sessions are captured per workstream and continued with `--resume` from the same directory.
-- **Fail-closed guardrails.** For each worktree, Engineering installs a `.claude/settings.json` whose PreToolUse/PostToolUse/Stop hooks run a bundled helper binary. The helper POSTs each hook to a local control server and prints its decision; if the server is unreachable, times out, or the payload is unreadable, the helper **denies** the tool call itself and still exits 0. (Claude Code's native HTTP hooks fail *open* on connection error, which is why the helper exists.)
+- **Fail-closed guardrails.** For each worktree, Engineering installs a `.claude/settings.json` whose PreToolUse/PostToolUse/Stop hooks run the `bridge` binary's hidden `__hook` subcommand. It POSTs each hook to a local control server and prints its decision; if the server is unreachable, times out, or the payload is unreadable, it **denies** the tool call itself and still exits 0. (Claude Code's native HTTP hooks fail *open* on connection error, which is why this forwarder exists.)
 - **Version resilience.** Everything version-fragile - CLI flag spelling, stream-json event shapes, hook payload/response schemas, settings rendering - lives only in `bridge-compat`, verified against fixtures captured from a known CLI version. Parsers are schema-tolerant: unknown fields ignored, unknown event types skipped, malformed input errors instead of panicking. Preflight records `claude --version` and the GUI shows a compatibility banner outside the tested range.
 - **Your data stays put.** Worktrees live under `~/.bridge/<repo>/worktrees`, never inside the target checkout. Merges to `main` are local and require explicit GUI confirmation; pushing to a remote is never automatic. The Kobayashi tester can only write under `tests/adversarial/` (enforced by the hook path policy), so it can never modify the code it attacks.
 
@@ -37,7 +37,7 @@ Mission objective
 | `bridge-engine` | Claude process runner: two-tier semaphore, timeouts, session registry, budgets, rate-limit detection, preflight |
 | `bridge-git` | Worktree lifecycle, rebase and local merge primitives (shells out to real `git`) |
 | `bridge-tactical` | Policy engine (prime directives, config rules), escalation broker, axum control server, order screening |
-| `bridge-hook-helper` | Fail-closed hook forwarder binary installed into every worktree |
+| `bridge-hook-helper` | Fail-closed hook forwarder logic, dispatched via the `bridge` binary's hidden `__hook` subcommand |
 | `bridge-computer` | Ship's Computer: SQLite persistence (missions, turns, hook decisions, battle reports, sessions, usage, findings memory) |
 | `bridge-stations` | Station profiles and prompts, Captain orchestration, mission state machine, merge queue, Kobayashi Maru |
 | `bridge-app` | The `bridge` GUI binary (eframe/egui) plus the composition root |

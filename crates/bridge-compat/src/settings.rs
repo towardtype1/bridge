@@ -1,6 +1,7 @@
 //! Rendering of the `.claude/settings.json` Engineering installs into each
 //! worktree: PreToolUse, PostToolUse and Stop hooks that run the bundled
-//! helper binary with the control server coordinates in env.
+//! `bridge` binary's hidden `__hook` subcommand with the control server
+//! coordinates in env.
 
 use bridge_core::WorkstreamId;
 use std::path::Path;
@@ -14,28 +15,30 @@ use std::path::Path;
 ///
 /// ```json
 /// { "type": "command",
-///   "command": "BRIDGE_SERVER_URL='<url>' BRIDGE_WORKSTREAM_ID='<id>' BRIDGE_TOKEN='<token>' '<helper_path>'",
+///   "command": "BRIDGE_SERVER_URL='<url>' BRIDGE_WORKSTREAM_ID='<id>' BRIDGE_TOKEN='<token>' '<exe_path>' __hook",
 ///   "timeout": <hook_timeout_secs> }
 /// ```
 ///
 /// Values are single-quoted with embedded single quotes escaped via the
-/// standard `'\''` idiom; the helper path may contain spaces.
+/// standard `'\''` idiom; the exe path may contain spaces. `__hook` is a
+/// bare trailing argument telling the `bridge` binary to dispatch to the
+/// hook forwarder instead of starting the GUI.
 pub fn render_worktree_settings(
     server_url: &str,
     workstream: WorkstreamId,
     token: &str,
-    helper_path: &Path,
+    exe_path: &Path,
     hook_timeout_secs: u32,
 ) -> serde_json::Value {
     let command = format!(
-        "{}={} {}={} {}={} {}",
+        "{}={} {}={} {}={} {} __hook",
         bridge_core::wire::ENV_SERVER_URL,
         shell_single_quote(server_url),
         bridge_core::wire::ENV_WORKSTREAM_ID,
         shell_single_quote(&workstream.to_string()),
         bridge_core::wire::ENV_TOKEN,
         shell_single_quote(token),
-        shell_single_quote(&helper_path.to_string_lossy()),
+        shell_single_quote(&exe_path.to_string_lossy()),
     );
     let entry = serde_json::json!([{
         "matcher": "*",
@@ -79,7 +82,7 @@ mod tests {
         );
         let command = format!(
             "BRIDGE_SERVER_URL='http://127.0.0.1:8471' BRIDGE_WORKSTREAM_ID='{WS}' \
-             BRIDGE_TOKEN='secret-token' '/opt/bridge/bridge-hook-helper'"
+             BRIDGE_TOKEN='secret-token' '/opt/bridge/bridge-hook-helper' __hook"
         );
         let entry = json!([{
             "matcher": "*",
@@ -114,7 +117,7 @@ mod tests {
             command,
             format!(
                 "BRIDGE_SERVER_URL='http://127.0.0.1:1'\\''1' BRIDGE_WORKSTREAM_ID='{WS}' \
-                 BRIDGE_TOKEN='tok'\\''en' '/opt/bridge tools/o'\\''brien-helper'"
+                 BRIDGE_TOKEN='tok'\\''en' '/opt/bridge tools/o'\\''brien-helper' __hook"
             )
         );
     }

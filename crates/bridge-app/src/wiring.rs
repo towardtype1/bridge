@@ -91,7 +91,7 @@ pub fn build(repo: PathBuf, config: BridgeConfig) -> Result<Wiring, Box<dyn std:
     });
 
     // 6. Mission controller on the background runtime.
-    let helper_path = hook_helper_path();
+    let helper_path = bridge_exe_path();
     let controller = MissionController::new(deps, config, helper_path, events.clone(), commands_rx);
     let controller_handle = runtime.spawn(async move {
         if let Err(err) = controller.run().await {
@@ -186,12 +186,11 @@ fn sweep_orphan_pids(computer: &ShipsComputer) {
     }
 }
 
-/// The hook helper binary is installed next to the app binary.
-fn hook_helper_path() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("bridge-hook-helper")))
-        .unwrap_or_else(|| PathBuf::from("bridge-hook-helper"))
+/// The running `bridge` binary is itself the hook entry point (it dispatches
+/// to the forwarder via its hidden `__hook` subcommand), so the exe path IS
+/// the hook target - no sibling binary to locate.
+fn bridge_exe_path() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bridge"))
 }
 
 #[cfg(test)]
