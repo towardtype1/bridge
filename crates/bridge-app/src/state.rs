@@ -164,36 +164,6 @@ impl AppState {
         self.ui.deny_reasons.remove(&id);
     }
 
-    /// Fraction of the total-turns budget used, clamped to 0..=1.
-    ///
-    /// Part of the reducer's query surface (kept as-is per the design spec)
-    /// and unit-tested below. The Apple-minimal GUI surfaces budget only on
-    /// the paused banner, so this is not read by the renderer today; hence the
-    /// allow. Remove it if a budget meter returns to the chrome.
-    #[allow(dead_code)]
-    pub fn budget_fraction(&self) -> Option<f32> {
-        self.budget.as_ref().map(|b| {
-            if b.max_total_turns == 0 {
-                1.0
-            } else {
-                (b.total_turns as f32 / b.max_total_turns as f32).clamp(0.0, 1.0)
-            }
-        })
-    }
-
-    /// Fraction of the wall-clock budget used, when one is configured.
-    ///
-    /// See [`Self::budget_fraction`] for why this carries an allow.
-    #[allow(dead_code)]
-    pub fn wall_clock_fraction(&self) -> Option<f32> {
-        let b = self.budget.as_ref()?;
-        let max = b.max_wall_clock_secs?;
-        if max == 0 {
-            return Some(1.0);
-        }
-        Some((b.wall_clock_secs as f32 / max as f32).clamp(0.0, 1.0))
-    }
-
     /// Banner text while rate limited; None when no banner should show.
     pub fn rate_limit_countdown_text(&self, now: DateTime<Utc>) -> Option<String> {
         match &self.rate_limit {
@@ -201,15 +171,15 @@ impl AppState {
                 let secs = (*at - now).num_seconds();
                 if secs > 0 {
                     Some(format!(
-                        "RATE LIMITED - retrying in {}",
+                        "Rate limited - retrying in {}",
                         format_duration_secs(secs as u64)
                     ))
                 } else {
-                    Some("RATE LIMITED - retrying now".to_owned())
+                    Some("Rate limited - retrying now".to_owned())
                 }
             }
             Some(RateLimitState::Hit { retry_at: None }) => {
-                Some("RATE LIMITED - waiting for reset".to_owned())
+                Some("Rate limited - waiting for reset".to_owned())
             }
             Some(RateLimitState::Cleared) | None => None,
         }
@@ -679,34 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_fraction_math() {
-        let mut s = AppState::default();
-        assert_eq!(s.budget_fraction(), None);
-        s.apply(BridgeEvent::BudgetUpdate(snapshot(30, 120)));
-        assert_eq!(s.budget_fraction(), Some(0.25));
-        s.apply(BridgeEvent::BudgetUpdate(snapshot(200, 120)));
-        assert_eq!(s.budget_fraction(), Some(1.0), "clamped at 1.0");
-        s.apply(BridgeEvent::BudgetUpdate(snapshot(5, 0)));
-        assert_eq!(
-            s.budget_fraction(),
-            Some(1.0),
-            "zero ceiling counts as full"
-        );
-    }
-
-    #[test]
-    fn wall_clock_fraction_math() {
-        let mut s = AppState::default();
-        assert_eq!(s.wall_clock_fraction(), None);
-        s.apply(BridgeEvent::BudgetUpdate(snapshot(1, 10))); // wall 30 of 120
-        assert_eq!(s.wall_clock_fraction(), Some(0.25));
-        let mut none_max = snapshot(1, 10);
-        none_max.max_wall_clock_secs = None;
-        s.apply(BridgeEvent::BudgetUpdate(none_max));
-        assert_eq!(s.wall_clock_fraction(), None, "no ceiling, no bar");
-    }
-
-    #[test]
     fn rate_limit_countdown_text_variants() {
         let mut s = AppState::default();
         let now = Utc.with_ymd_and_hms(2026, 7, 6, 12, 0, 0).unwrap();
@@ -717,7 +659,7 @@ mod tests {
         }));
         assert_eq!(
             s.rate_limit_countdown_text(now).as_deref(),
-            Some("RATE LIMITED - retrying in 3m 20s")
+            Some("Rate limited - retrying in 3m 20s")
         );
 
         s.apply(BridgeEvent::RateLimit(RateLimitState::Hit {
@@ -725,7 +667,7 @@ mod tests {
         }));
         assert_eq!(
             s.rate_limit_countdown_text(now).as_deref(),
-            Some("RATE LIMITED - retrying now")
+            Some("Rate limited - retrying now")
         );
 
         s.apply(BridgeEvent::RateLimit(RateLimitState::Hit {
@@ -733,7 +675,7 @@ mod tests {
         }));
         assert_eq!(
             s.rate_limit_countdown_text(now).as_deref(),
-            Some("RATE LIMITED - waiting for reset")
+            Some("Rate limited - waiting for reset")
         );
 
         s.apply(BridgeEvent::RateLimit(RateLimitState::Cleared));
