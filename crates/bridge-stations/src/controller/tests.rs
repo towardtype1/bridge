@@ -1262,6 +1262,207 @@ async fn in_flight_turn_proposal_discarded_after_approval() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn stale_approval_rejected_and_does_not_launch() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("v1", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for("rev 1", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 1, .. })
+    })
+    .await;
+    // Second proposal supersedes.
+    deps.set_plan(&[("v2", &[])]);
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "actually, rename it".into(),
+    })
+    .await;
+    rig.wait_for("rev 2", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 2, .. })
+    })
+    .await;
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("stale rejected", |e| {
+        matches!(e, BridgeEvent::ProposalRejected { revision: 1, .. })
+    })
+    .await;
+    assert!(
+        deps.recorded_missions.lock().unwrap()[0]
+            .workstreams
+            .is_empty(),
+        "nothing launched"
+    );
+    rig.send(BridgeCommand::ApproveProposal { revision: 2 })
+        .await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+    assert_eq!(rig.plan().workstreams[0].slug, "v2");
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn approval_during_in_flight_turn_locks_and_discards_late_proposal() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("keep", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for("rev 1", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 1, .. })
+    })
+    .await;
+    // A turn that never completes keeps the conference in-flight
+    // deterministically while we approve rev 1 underneath it.
+    deps.push_turn(Station::Captain, TurnResponse::Hang);
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "one more tweak".into(),
+    })
+    .await;
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+    // The launched plan is rev 1's ("keep"), regardless of the in-flight turn.
+    let real = deps
+        .recorded_missions
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(real.workstreams[0].slug, "keep");
+    // No PlanProposed with revision 2 ever surfaced.
+    assert!(
+        !rig.collected
+            .iter()
+            .any(|e| matches!(e, BridgeEvent::PlanProposed { revision: 2, .. }))
+    );
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn conference_turn_cap_rejects_further_turns_but_allows_approval() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("solo", &[])]);
+    let mut config = BridgeConfig::default();
+    config.captain.max_conference_turns = 1;
+    let mut rig = spawn_rig(deps.clone(), config, None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for("rev 1", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 1, .. })
+    })
+    .await;
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "more".into(),
+    })
+    .await;
+    rig.wait_for(
+        "cap rejection",
+        |e| matches!(e, BridgeEvent::ProposalRejected { reason, .. } if reason.contains("budget")),
+    )
+    .await;
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn schema_garbage_gets_one_retry_then_diagnostic() {
+    let deps = MockDeps::new();
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "wrong": "shape"
+        })),
+    );
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "also": "wrong"
+        })),
+    );
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for(
+        "diagnostic",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("unreadable")),
+    )
+    .await;
+    // Two turns ran: original + one corrective retry.
+    rig.wait_until("two captain turns", || {
+        deps.turn_log()
+            .iter()
+            .filter(|t| t.station == Station::Captain)
+            .count()
+            == 2
+    })
+    .await;
+    // Conference is still alive: saying more works.
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "try again".into(),
+    })
+    .await;
+    rig.wait_for("recovered", |e| {
+        matches!(e, BridgeEvent::PlanProposed { .. })
+    })
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn turn_error_keeps_conference_recoverable() {
+    let deps = MockDeps::new();
+    deps.push_turn(Station::Captain, TurnResponse::Err("spawn failed".into()));
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for(
+        "error surfaced",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("did not respond")),
+    )
+    .await;
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "retry".into(),
+    })
+    .await;
+    rig.wait_for("recovered", |e| {
+        matches!(e, BridgeEvent::PlanProposed { .. })
+    })
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn planning_state_emitted_at_conference_open_and_mission_recorded() {
     let deps = MockDeps::new();
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
