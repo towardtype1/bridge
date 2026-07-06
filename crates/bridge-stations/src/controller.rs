@@ -935,11 +935,16 @@ where
                 .await;
             match result {
                 Ok(p) => {
+                    let path = p.handle.path.clone();
                     if let Some(m) = self.mission.as_mut()
                         && let Some(w) = m.ws.get_mut(&ws)
                     {
                         w.provisioned = Some(p);
                     }
+                    self.shared.emit(BridgeEvent::WorkstreamProvisioned {
+                        id: ws,
+                        worktree_path: path,
+                    });
                 }
                 Err(e) => {
                     self.set_status(

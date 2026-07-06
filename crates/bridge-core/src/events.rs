@@ -7,6 +7,7 @@ use crate::ids::{EscalationId, MissionId, OrderId, SessionId, Station, Workstrea
 use crate::report::BattleReport;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Any observable happening in the harness, streamed live to the GUI and
 /// recorded by the Ship's Computer.
@@ -48,6 +49,12 @@ pub enum BridgeEvent {
         detected: String,
         tested_min: String,
         tested_max: String,
+    },
+    /// A workstream's worktree was created on disk; carries its path so the
+    /// GUI can offer "Open in editor".
+    WorkstreamProvisioned {
+        id: WorkstreamId,
+        worktree_path: PathBuf,
     },
 }
 

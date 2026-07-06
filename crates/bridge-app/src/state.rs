@@ -8,6 +8,7 @@ use bridge_core::{
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Everything the panels render. Bounded buffers: logs and tactical feed
 /// keep the newest `MAX_FEED` entries (drop oldest).
@@ -52,6 +53,8 @@ pub struct WorkstreamPanel {
     pub output: Vec<(bridge_core::Station, String)>,
     pub tool_calls: Vec<String>,
     pub turns: Vec<TurnRecord>,
+    /// Worktree path once provisioning completes; enables "Open in editor".
+    pub worktree_path: Option<PathBuf>,
 }
 
 impl AppState {
@@ -127,6 +130,9 @@ impl AppState {
                 tested_min,
                 tested_max,
             } => self.compat_warning = Some((detected, tested_min, tested_max)),
+            BridgeEvent::WorkstreamProvisioned { id, worktree_path } => {
+                self.panel_mut(id).worktree_path = Some(worktree_path);
+            }
         }
     }
 
@@ -736,6 +742,20 @@ mod tests {
         assert_eq!(format_duration_secs(200), "3m 20s");
         assert_eq!(format_duration_secs(3720), "1h 02m");
         assert_eq!(format_duration_secs(0), "0s");
+    }
+
+    #[test]
+    fn workstream_provisioned_sets_path() {
+        let mut s = AppState::default();
+        let ws = WorkstreamId::new();
+        s.apply(BridgeEvent::WorkstreamProvisioned {
+            id: ws,
+            worktree_path: std::path::PathBuf::from("/tmp/wt/ws-a"),
+        });
+        assert_eq!(
+            s.workstreams[&ws].worktree_path.as_deref(),
+            Some(std::path::Path::new("/tmp/wt/ws-a"))
+        );
     }
 
     #[test]

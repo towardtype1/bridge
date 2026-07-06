@@ -1070,6 +1070,22 @@ async fn battle_reports_are_filed_on_the_bus() {
 }
 
 // ---------------------------------------------------------------------------
+// worktree provisioning events
+
+#[tokio::test(start_paused = true)]
+async fn provisioning_emits_worktree_path() {
+    let deps = MockDeps::new();
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("provision mission").await;
+    rig.wait_for("worktree path emitted", |e| {
+        matches!(e, BridgeEvent::WorkstreamProvisioned { worktree_path, .. }
+            if worktree_path.to_string_lossy().contains("provision-mission"))
+    })
+    .await;
+    let _ = rig.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
 // small pure helpers
 
 #[test]
