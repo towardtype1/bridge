@@ -1,0 +1,18 @@
+[package]
+name = "bridge-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Claude CLI process runner: spawn, timeout, semaphore, session registry, budgets, rate-limit detection, preflight"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-compat.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

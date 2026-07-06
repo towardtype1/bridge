@@ -1,0 +1,17 @@
+[package]
+name = "bridge-computer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ship's Computer: SQLite persistence for missions, turns, hook decisions, battle reports, sessions and usage"
+
+[dependencies]
+bridge-core.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

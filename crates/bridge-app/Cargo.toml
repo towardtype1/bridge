@@ -1,0 +1,30 @@
+[package]
+name = "bridge-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bridge GUI application: eframe front-end wired to the mission engine via event and command channels"
+
+[[bin]]
+name = "bridge"
+path = "src/main.rs"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-compat.workspace = true
+bridge-engine.workspace = true
+bridge-git.workspace = true
+bridge-tactical.workspace = true
+bridge-computer.workspace = true
+bridge-stations.workspace = true
+eframe.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

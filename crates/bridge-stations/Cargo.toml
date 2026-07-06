@@ -1,0 +1,23 @@
+[package]
+name = "bridge-stations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Station profiles and prompts, Captain orchestrator, mission state machine, Ops scheduling, merge queue, Kobayashi Maru"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-compat.workspace = true
+bridge-engine.workspace = true
+bridge-git.workspace = true
+bridge-tactical.workspace = true
+bridge-computer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

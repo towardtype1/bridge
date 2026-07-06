@@ -1,0 +1,22 @@
+[package]
+name = "bridge-tactical"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Guardrails: policy engine, escalation broker, hook control server, pre-dispatch order screening"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-compat.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+axum.workspace = true
+regex.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

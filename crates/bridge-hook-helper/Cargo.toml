@@ -1,0 +1,18 @@
+[package]
+name = "bridge-hook-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Fail-closed hook forwarder: reads Claude Code hook JSON on stdin, POSTs to the Bridge control server, prints the decision"
+
+[[bin]]
+name = "bridge-hook-helper"
+path = "src/main.rs"
+
+[dependencies]
+bridge-core.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

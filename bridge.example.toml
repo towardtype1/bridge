@@ -1,0 +1,81 @@
+# Bridge harness configuration. Copy to bridge.toml and adjust.
+# Every key is optional; the values below are the defaults.
+
+[claude]
+binary_path = "claude"
+# Model for Captain/Helm/Science/Comms turns (alias or full model id).
+model = "sonnet"
+# Kobayashi Maru gets the strongest available tier by default.
+kobayashi_model = "fable"
+# Inclusive tested CLI version range. Outside it the GUI shows a
+# compatibility warning (with "proceed anyway"). Captured against 2.1.201.
+tested_version_min = "2.1.190"
+tested_version_max = "2.2.99"
+# Concurrent claude child processes (semaphore size)...
+max_concurrent = 3
+# ...of which this many slots only Kobayashi Maru runs may occupy, so
+# testers and builders don't starve each other.
+kobayashi_reserved_slots = 1
+# Hard wall-clock timeout per claude invocation, seconds.
+turn_timeout_secs = 900
+# Timeout written into installed hook settings, seconds. Escalations must
+# resolve inside this window (see tactical.escalation_timeout_secs).
+hook_timeout_secs = 600
+
+[budgets]
+max_total_turns = 120
+max_turns_per_workstream = 30
+max_kobayashi_rounds = 3
+# Optional overall mission wall-clock ceiling, seconds. Unset = unlimited.
+# max_wall_clock_secs = 7200
+
+[tactical]
+# Regexes over Bash commands; a hit denies the call. Prime directives
+# (worktree escape, credential reads, forced pushes, curl|sh, rm -rf at or
+# above the worktree root) are hardcoded and cannot be disabled here.
+destructive_patterns = [
+    'rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+',
+    'git\s+push\s+.*--force',
+    'curl[^|]*\|\s*(ba)?sh',
+    'wget[^|]*\|\s*(ba)?sh',
+    'git\s+reset\s+--hard',
+    'mkfs|diskutil\s+erase',
+]
+# Regexes over file paths any tool touches; a hit denies.
+protected_path_patterns = [
+    '(^|/)\.ssh(/|$)',
+    '(^|/)\.aws(/|$)',
+    '(^|/)\.gnupg(/|$)',
+    '(^|/)\.env(\.|$)',
+    '(^|/)credentials(\.|$|/)',
+    '(^|/)\.claude/settings\.json$',
+]
+# When false, network egress commands (curl/wget/nc/ssh/scp) escalate to
+# the GUI instead of running.
+allow_network_egress = false
+# One-shot cheap claude review of suspicious-but-not-denied calls.
+deep_scan = false
+# Start missions with Red Alert active (EVERY tool call escalates).
+red_alert_default = false
+# How long an escalation waits for you before failing closed to deny.
+# Keep comfortably below claude.hook_timeout_secs.
+escalation_timeout_secs = 540
+
+[merge]
+# "rebase": rebase the branch onto main, fast-forward main (default).
+# "merge-commit": create a merge commit instead.
+mode = "rebase"
+
+[worktrees]
+# Where workstream worktrees live. Default: the platform data dir
+# (~/Library/Application Support/bridge/... on macOS), never inside the
+# target repository.
+# root = "/absolute/path"
+# Keep worktrees + installed hook settings when a mission fails.
+keep_on_failure = true
+
+# Linear MCP sync. Uncomment to enable; the mcp config JSON is passed to
+# claude via --mcp-config. Reads are auto-allowed, writes escalate unless
+# they match expected sync events, deletes always escalate.
+# [linear]
+# mcp_config_path = "/path/to/linear-mcp.json"
