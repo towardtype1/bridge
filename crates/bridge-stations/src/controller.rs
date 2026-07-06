@@ -24,6 +24,7 @@
 //! reports. Shutdown persists everything and kills children gracefully.
 //! ```
 
+use crate::amendment;
 use crate::engineering::{self, ProvisionedWorktree};
 use crate::kobayashi::{KobayashiError, KobayashiRunner};
 use crate::merge_queue::MergeQueue;
@@ -803,8 +804,17 @@ where
         }
     }
 
-    /// Pre-launch arm; Task 7 adds the mid-mission amendment arm.
+    /// Pre-launch (no running mission): full-plan validation. Mid-mission
+    /// (a running mission): diff-and-lock amendment validation.
     async fn handle_proposal(&mut self, draft: PlanDraft) {
+        if self.mission.is_some() {
+            self.handle_amendment_proposal(draft).await;
+        } else {
+            self.handle_prelaunch_proposal(draft).await;
+        }
+    }
+
+    async fn handle_prelaunch_proposal(&mut self, draft: PlanDraft) {
         let Some(conf) = self.conference.as_mut() else {
             return;
         };
@@ -836,6 +846,49 @@ where
             Err(e) if conf.auto_retries < 2 => {
                 conf.auto_retries += 1;
                 self.start_captain_turn(format!("{}{e}", prompts::PLAN_REJECTED_PREFIX));
+            }
+            Err(e) => {
+                conf.auto_retries = 0;
+                let revision = conf.revision;
+                self.shared.emit(BridgeEvent::ProposalRejected {
+                    mission,
+                    revision,
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+
+    /// Mid-mission: validate the re-emitted full draft against the running
+    /// plan's lock rules (`amendment::validate_amendment`); on success the
+    /// proposal carries a `PlanDiff` for the GUI/user to review before
+    /// approving.
+    async fn handle_amendment_proposal(&mut self, draft: PlanDraft) {
+        let Some(m) = self.mission.as_ref() else {
+            return;
+        };
+        let statuses: HashMap<WorkstreamId, WorkstreamStatus> =
+            m.ws.iter().map(|(id, w)| (*id, w.status.clone())).collect();
+        let result = amendment::validate_amendment(&m.plan, &statuses, &draft);
+        let Some(conf) = self.conference.as_mut() else {
+            return;
+        };
+        let mission = conf.mission_id;
+        match result {
+            Ok(diff) => {
+                conf.auto_retries = 0;
+                conf.revision += 1;
+                conf.latest_proposal = Some((conf.revision, draft.clone()));
+                self.shared.emit(BridgeEvent::PlanProposed {
+                    mission,
+                    revision: conf.revision,
+                    plan: draft,
+                    diff: Some(diff),
+                });
+            }
+            Err(e) if conf.auto_retries < 2 => {
+                conf.auto_retries += 1;
+                self.start_captain_turn(format!("{}{e}", prompts::AMENDMENT_REJECTED_PREFIX));
             }
             Err(e) => {
                 conf.auto_retries = 0;
@@ -892,8 +945,179 @@ where
                     });
                 }
             }
+        } else {
+            self.apply_amendment(draft, revision).await;
         }
-        // Mid-mission amendment application lands in Task 7.
+    }
+
+    /// Approved mid-mission amendment: re-validate (state may have drifted
+    /// since the proposal was raised - e.g. a Pending workstream may have
+    /// started in the meantime), then splice the diff into the running
+    /// plan: locked specs pass through verbatim, revised Pending specs take
+    /// the draft's title/description, removed Pending workstreams are
+    /// cancelled (their `WsState` history is kept), and added workstreams
+    /// get a fresh `WsState` and are announced Pending.
+    async fn apply_amendment(&mut self, draft: PlanDraft, revision: u64) {
+        let Some(m) = self.mission.as_ref() else {
+            return;
+        };
+        let mission = m.plan.mission_id;
+        let statuses: HashMap<WorkstreamId, WorkstreamStatus> =
+            m.ws.iter().map(|(id, w)| (*id, w.status.clone())).collect();
+        if let Err(e) = amendment::validate_amendment(&m.plan, &statuses, &draft) {
+            self.shared.emit(BridgeEvent::ProposalRejected {
+                mission,
+                revision,
+                reason: e,
+            });
+            return;
+        }
+        let needs_base_ref_fallback = m.plan.workstreams.is_empty();
+        let base_ref_fallback = if needs_base_ref_fallback {
+            Some(
+                self.shared
+                    .blocking(|d| d.main_branch())
+                    .await
+                    .unwrap_or_else(|_| "main".into()),
+            )
+        } else {
+            None
+        };
+
+        let (removed_ids, added_specs) = {
+            let m = self.mission.as_mut().expect("checked above");
+            let base_ref =
+                base_ref_fallback.unwrap_or_else(|| m.plan.workstreams[0].base_ref.clone());
+
+            let mut slug_to_id: HashMap<String, WorkstreamId> = m
+                .plan
+                .workstreams
+                .iter()
+                .map(|w| (w.slug.clone(), w.id))
+                .collect();
+            for dw in &draft.workstreams {
+                slug_to_id.entry(dw.slug.clone()).or_default();
+            }
+
+            let mut existing: HashMap<String, WorkstreamSpec> = m
+                .plan
+                .workstreams
+                .drain(..)
+                .map(|w| (w.slug.clone(), w))
+                .collect();
+            let mut new_workstreams = Vec::with_capacity(draft.workstreams.len());
+            let mut added_specs = Vec::new();
+            for dw in &draft.workstreams {
+                let id = slug_to_id[&dw.slug];
+                let spec = match existing.remove(&dw.slug) {
+                    Some(mut spec) => {
+                        spec.title = dw.title.clone();
+                        spec.description = dw.description.clone();
+                        spec
+                    }
+                    None => {
+                        let spec = WorkstreamSpec {
+                            id,
+                            slug: dw.slug.clone(),
+                            title: dw.title.clone(),
+                            description: dw.description.clone(),
+                            base_ref: base_ref.clone(),
+                        };
+                        added_specs.push(spec.clone());
+                        spec
+                    }
+                };
+                new_workstreams.push(spec);
+            }
+            // Whatever is left in `existing` had a slug the draft dropped:
+            // exactly the removed set (locked removals already failed
+            // re-validation above).
+            let removed_ids: Vec<WorkstreamId> = existing.values().map(|w| w.id).collect();
+            m.plan.edges = draft
+                .workstreams
+                .iter()
+                .flat_map(|dw| {
+                    let to = slug_to_id[&dw.slug];
+                    dw.depends_on
+                        .iter()
+                        .map(|dep| (slug_to_id[dep], to))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            m.plan.workstreams = new_workstreams;
+            // Keep each surviving WsState's cached spec (title/description
+            // used to build the Helm order later) in sync with the plan.
+            let synced: Vec<WorkstreamSpec> = m.plan.workstreams.clone();
+            for spec in synced {
+                if let Some(w) = m.ws.get_mut(&spec.id) {
+                    w.spec = spec;
+                }
+            }
+            (removed_ids, added_specs)
+        };
+
+        for id in removed_ids {
+            self.set_status(id, WorkstreamStatus::Cancelled);
+            if let Some(m) = self.mission.as_mut()
+                && let Some(w) = m.ws.get_mut(&id)
+            {
+                w.started = true;
+            }
+        }
+
+        for spec in added_specs {
+            let id = spec.id;
+            if let Some(m) = self.mission.as_mut() {
+                m.ws.insert(
+                    id,
+                    WsState {
+                        spec,
+                        status: WorkstreamStatus::Pending,
+                        provisioned: None,
+                        helm_session: None,
+                        turns: 0,
+                        rounds: 0,
+                        busy: false,
+                        started: false,
+                        merge_gate: false,
+                        pending_rebase: false,
+                        stashed: None,
+                    },
+                );
+            }
+            if let Err(e) = self
+                .shared
+                .deps
+                .record_workstream_status(id, &WorkstreamStatus::Pending)
+            {
+                tracing::warn!("failed to record workstream status: {e}");
+            }
+            self.shared.emit(BridgeEvent::WorkstreamStatus {
+                id,
+                status: WorkstreamStatus::Pending,
+            });
+        }
+
+        let Some(m) = self.mission.as_mut() else {
+            return;
+        };
+        m.order = m
+            .plan
+            .topo_order()
+            .unwrap_or_else(|_| m.plan.workstreams.iter().map(|w| w.id).collect());
+        m.queue.set_topo(m.order.clone());
+        if let Err(e) = self
+            .shared
+            .deps
+            .record_mission(&m.plan, &self.shared.config)
+        {
+            tracing::warn!("failed to persist amended mission: {e}");
+        }
+        if let Some(c) = self.conference.as_mut() {
+            c.latest_proposal = None;
+            c.approved = false;
+        }
+        self.start_eligible().await;
     }
 
     /// Install the plan as the running mission; `captain_turn` carries the
@@ -2279,7 +2503,9 @@ where
             let all_settled = m.ws.values().all(|w| {
                 matches!(
                     w.status,
-                    WorkstreamStatus::Merged | WorkstreamStatus::Failed { .. }
+                    WorkstreamStatus::Merged
+                        | WorkstreamStatus::Failed { .. }
+                        | WorkstreamStatus::Cancelled
                 ) || self.winding_down
             });
             nothing_running && all_settled

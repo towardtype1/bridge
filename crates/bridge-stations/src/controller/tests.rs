@@ -1088,6 +1088,15 @@ async fn resumed_mission_conference_recaps_when_no_session_survives() {
     let deps = MockDeps::new();
     let plan = small_plan();
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
+    // Purely conversational reply: the default mock response's plan
+    // proposal would otherwise re-propose "solo" against the locked (now
+    // Working) workstream and trip the amendment lock rejection loop.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "All quiet, captain.",
+        })),
+    );
     rig.send(BridgeCommand::SayToCaptain {
         text: "status?".into(),
     })
@@ -1124,6 +1133,12 @@ async fn resumed_mission_conference_resumes_persisted_session() {
         (SessionId::from("old-session"), deps.repo_root()),
     );
     let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "All quiet, captain.",
+        })),
+    );
     rig.send(BridgeCommand::SayToCaptain {
         text: "status?".into(),
     })
@@ -1799,6 +1814,50 @@ async fn amendment_cancelling_pending_workstream_emits_cancelled() {
         )
     })
     .await;
+    rig.shutdown().await.unwrap();
+}
+
+/// Carry-forward: `open_mid_mission_conference`'s cwd-mismatch arm. A
+/// persisted session whose cwd differs from the current `repo_root()` must
+/// be treated as not surviving: fresh session, recap prefix included.
+#[tokio::test(start_paused = true)]
+async fn resumed_mission_conference_recaps_when_session_cwd_mismatches() {
+    let deps = MockDeps::new();
+    let plan = small_plan();
+    let captain_ws = WorkstreamId(plan.mission_id.0);
+    deps.sessions_script.lock().unwrap().insert(
+        (captain_ws, Station::Captain),
+        (SessionId::from("old-session"), PathBuf::from("/elsewhere")),
+    );
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "All quiet, captain.",
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "status?".into(),
+    })
+    .await;
+    rig.wait_for("captain answers", |e| {
+        matches!(e, BridgeEvent::CaptainSays { .. })
+    })
+    .await;
+    let captain: Vec<_> = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .collect();
+    assert_eq!(captain.len(), 1);
+    assert_eq!(
+        captain[0].inv.resume, None,
+        "cwd mismatch -> session not resumed"
+    );
+    assert!(
+        captain[0].inv.prompt.contains("solo"),
+        "recap names the workstream"
+    );
     rig.shutdown().await.unwrap();
 }
 

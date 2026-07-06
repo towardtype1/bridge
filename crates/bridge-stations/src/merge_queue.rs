@@ -57,6 +57,11 @@ impl MergeQueue {
         }
     }
 
+    /// Replace the topology after an approved plan amendment.
+    pub fn set_topo(&mut self, topo: Vec<WorkstreamId>) {
+        self.topo = topo;
+    }
+
     fn topo_index(&self, ws: WorkstreamId) -> usize {
         // Unknown workstreams (not in the plan topology) sort last.
         self.topo
