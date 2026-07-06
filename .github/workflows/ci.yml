@@ -76,16 +76,14 @@ jobs:
       - name: Build release
         run: cargo build --workspace --release --bins
 
-      # Collect the GUI binary, the fail-closed hook helper (installed into
-      # every worktree at runtime, so it ships alongside), and the annotated
-      # example config.
+      # Collect the single bridge binary (the fail-closed hook runs as its
+      # `bridge __hook` subcommand) and the annotated example config.
       - name: Stage artifact
         shell: bash
         run: |
           staging="bridge-${{ matrix.name }}"
           mkdir -p "$staging"
           cp target/release/bridge "$staging"/
-          cp target/release/bridge-hook-helper "$staging"/
           cp bridge.example.toml README.md "$staging"/
           echo "STAGING=$staging" >> "$GITHUB_ENV"
 
