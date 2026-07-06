@@ -137,13 +137,19 @@ pub fn spawn_repaint_forwarder(
 }
 
 /// Resolve the per-repo data dir (worktrees root default, db path):
-/// `<platform data dir>/bridge/<sanitized-repo-path>/`.
+/// `~/.bridge/<sanitized-repo-path>/`.
+///
+/// Deliberately NOT the platform data dir: on macOS that is
+/// `~/Library/Application Support`, and a space inside every worktree
+/// path degrades anything that round-trips paths through shell strings
+/// (agent Bash commands, hook settings, policy heuristics). A dot-dir in
+/// $HOME is space-free on every platform.
 // The `&PathBuf` parameter is a frozen contract signature; `&Path` would
 // be idiomatic (clippy::ptr_arg) but changing it is not allowed here.
 #[allow(clippy::ptr_arg)]
 pub fn data_dir_for_repo(repo: &PathBuf) -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join("bridge").join(sanitize_repo_path(repo))
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join(".bridge").join(sanitize_repo_path(repo))
 }
 
 /// Flatten a repo path into a single directory name: every path separator
@@ -195,12 +201,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn data_dir_is_under_platform_dir_slash_bridge() {
+    fn data_dir_is_a_space_free_home_dot_dir() {
         let repo = PathBuf::from("/Users/kirk/code/enterprise");
         let dir = data_dir_for_repo(&repo);
-        let expected_base = dirs::data_dir()
+        let expected_base = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("bridge");
+            .join(".bridge");
         assert!(
             dir.starts_with(&expected_base),
             "{dir:?} should start with {expected_base:?}"
@@ -208,6 +214,13 @@ mod tests {
         assert_eq!(
             dir.file_name().unwrap().to_string_lossy(),
             "Users-kirk-code-enterprise"
+        );
+        assert!(
+            !dir.strip_prefix(dirs::home_dir().unwrap_or_default())
+                .unwrap_or(&dir)
+                .to_string_lossy()
+                .contains(' '),
+            "harness-managed paths must stay space-free: {dir:?}"
         );
     }
 

@@ -483,10 +483,11 @@ async fn screen_rejected_fails_workstream_without_any_helm_turn() {
         )
     })
     .await;
-    rig.wait_for("mission complete", |e| {
+    rig.wait_for("mission failed", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Complete, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Failed { reason }, .. })
+                if reason.contains("workstreams failed")
         )
     })
     .await;
@@ -578,11 +579,11 @@ async fn screen_needs_review_denied_fails_the_workstream() {
     })
     .await;
     assert!(!deps.turn_log().iter().any(|t| t.station == Station::Helm));
-    // The failed workstream settles the mission: it completes on its own.
-    rig.wait_for("mission complete", |e| {
+    // The failed workstream settles the mission, which ends Failed.
+    rig.wait_for("mission failed", |e| {
         matches!(
             e,
-            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Complete, .. })
+            BridgeEvent::MissionStatus(MissionStatusUpdate { state: MissionState::Failed { .. }, .. })
         )
     })
     .await;

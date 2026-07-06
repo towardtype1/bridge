@@ -34,8 +34,12 @@ pub struct ClaudeInvocation {
 
 impl ClaudeInvocation {
     /// Render argv. Rules (verified 2.1.201):
-    /// - always: `-p <prompt> --verbose --max-turns <n>`
+    /// - always: `-p <prompt> --max-turns <n>`
     /// - `--output-format stream-json` or `json` per `output_format`
+    /// - `--verbose` ONLY with stream-json. Verified quirk: `--output-format
+    ///   json --verbose` changes the output from a single result object to a
+    ///   one-line JSON ARRAY of all events, which a line-based result parser
+    ///   cannot treat as a result event.
     /// - NEVER `--bare` (breaks subscription OAuth)
     /// - `--resume <id>` when resuming (same worktree cwd required)
     /// - `--allowedTools` / `--disallowedTools`: the flag once, then ONE
@@ -46,16 +50,17 @@ impl ClaudeInvocation {
     ///   `--append-system-prompt`, `--json-schema` (compact JSON as one
     ///   arg), `--setting-sources` (comma-joined as one arg) only when set
     ///
-    /// Fixed argument order (asserted by golden tests): `-p`, `--verbose`,
-    /// `--output-format`, `--max-turns`, `--resume`, `--model`,
-    /// `--allowedTools`, `--disallowedTools`, `--append-system-prompt`,
-    /// `--json-schema`, `--mcp-config`, `--strict-mcp-config`,
-    /// `--setting-sources`.
+    /// Fixed argument order (asserted by golden tests): `-p`, `--verbose`
+    /// (stream-json only), `--output-format`, `--max-turns`, `--resume`,
+    /// `--model`, `--allowedTools`, `--disallowedTools`,
+    /// `--append-system-prompt`, `--json-schema`, `--mcp-config`,
+    /// `--strict-mcp-config`, `--setting-sources`.
     pub fn to_args(&self) -> Vec<OsString> {
-        let mut args: Vec<OsString> = vec![
-            "-p".into(),
-            self.prompt.as_str().into(),
-            "--verbose".into(),
+        let mut args: Vec<OsString> = vec!["-p".into(), self.prompt.as_str().into()];
+        if self.output_format == OutputFormat::StreamJson {
+            args.push("--verbose".into());
+        }
+        args.extend::<[OsString; 4]>([
             "--output-format".into(),
             match self.output_format {
                 OutputFormat::StreamJson => "stream-json".into(),
@@ -63,7 +68,7 @@ impl ClaudeInvocation {
             },
             "--max-turns".into(),
             self.max_turns.to_string().into(),
-        ];
+        ]);
         if let Some(session) = &self.resume {
             args.push("--resume".into());
             args.push(session.0.as_str().into());
@@ -175,7 +180,8 @@ mod tests {
             args_of(&[
                 "-p",
                 "Fix the bug",
-                "--verbose",
+                // No --verbose: json mode + --verbose makes the CLI emit a
+                // one-line array of ALL events instead of the result object.
                 "--output-format",
                 "json",
                 "--max-turns",

@@ -109,7 +109,9 @@ impl KobayashiRunner {
                  test; write failing tests only under tests/adversarial/."
                     .into(),
             ),
-            output_format: OutputFormat::Json,
+            // Stream for live observability; the BattleReport arrives as
+            // structured output on the terminal result event.
+            output_format: OutputFormat::StreamJson,
             setting_sources: vec!["project".into(), "local".into()],
         };
         let ctx = TurnCtx {
@@ -124,8 +126,21 @@ impl KobayashiRunner {
             .await
             .map_err(|e| KobayashiError::Turn(e.to_string()))?;
         if outcome.exit != ExitClass::Success {
+            // Carry whatever the stream said before dying; exit codes alone
+            // have proven undiagnosable.
+            let detail = outcome
+                .result
+                .as_ref()
+                .map(|r| {
+                    format!(
+                        " (result subtype {}, text: {})",
+                        r.subtype,
+                        r.result.as_deref().unwrap_or("<none>").chars().take(300).collect::<String>()
+                    )
+                })
+                .unwrap_or_default();
             return Err(KobayashiError::Turn(format!(
-                "claude exited abnormally: {:?}",
+                "claude exited abnormally: {:?}{detail}",
                 outcome.exit
             )));
         }

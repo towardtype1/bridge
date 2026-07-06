@@ -606,12 +606,68 @@ fn split_segments(cmd: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Shell-word tokenizer: honors single quotes, double quotes and
+/// backslash escapes so a path containing spaces (e.g. under macOS
+/// `~/Library/Application Support`) stays ONE token. Splitting such a
+/// path in half produced false worktree-escape denials on legitimate
+/// in-worktree commands. Unterminated quotes are tolerated: the rest of
+/// the segment becomes part of the current token (conservative).
 fn tokenize(segment: &str) -> Vec<String> {
-    segment
-        .split_whitespace()
-        .map(|t| t.trim_matches(|c| c == '"' || c == '\'').to_string())
-        .filter(|t| !t.is_empty())
-        .collect()
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut chars = segment.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if in_word {
+                    tokens.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            '\\' => {
+                in_word = true;
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '\'' => {
+                in_word = true;
+                for q in chars.by_ref() {
+                    if q == '\'' {
+                        break;
+                    }
+                    current.push(q);
+                }
+            }
+            '"' => {
+                in_word = true;
+                while let Some(q) = chars.next() {
+                    match q {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some(esc @ ('"' | '\\' | '$' | '`')) => current.push(esc),
+                            Some(other) => {
+                                current.push('\\');
+                                current.push(other);
+                            }
+                            None => current.push('\\'),
+                        },
+                        other => current.push(other),
+                    }
+                }
+            }
+            other => {
+                in_word = true;
+                current.push(other);
+            }
+        }
+    }
+    if in_word {
+        tokens.push(current);
+    }
+    tokens.retain(|t| !t.is_empty());
+    tokens
 }
 
 /// Drop leading env assignments (`FOO=bar`) and wrapper commands
@@ -1245,6 +1301,36 @@ mod tests {
             &eng.decide(ws, &bash("touch /tmp/lab/wt/tests/adversarial/t.rs")),
             false,
             "bash write inside adversarial dir",
+        );
+    }
+
+    #[test]
+    fn worktree_paths_with_spaces_are_not_escape_false_positives() {
+        // Regression: the macOS data dir ("~/Library/Application Support")
+        // put a space in every worktree path; the old whitespace tokenizer
+        // split it and denied legitimate in-worktree commands.
+        let eng = PolicyEngine::new(TacticalConfig::default()).expect("valid config");
+        let ws = WorkstreamId::new();
+        let wt = "/Users/kirk/Library/Application Support/bridge/repo/worktrees/m/ws-a";
+        eng.register_workstream(
+            ws,
+            WorkstreamCtx {
+                worktree_path: PathBuf::from(wt),
+                write_only_under: None,
+            },
+        );
+        for cmd in [
+            r"git -C /Users/kirk/Library/Application\ Support/bridge/repo/worktrees/m/ws-a status",
+            r#"touch "/Users/kirk/Library/Application Support/bridge/repo/worktrees/m/ws-a/new.rs""#,
+            r"cat '/Users/kirk/Library/Application Support/bridge/repo/worktrees/m/ws-a/src/lib.rs'",
+        ] {
+            assert_pass(&eng.decide(ws, &bash(cmd)), false, cmd);
+        }
+        // Real escapes with quoted spaced paths still deny.
+        assert_deny(
+            &eng.decide(ws, &bash(r#"touch "/Users/kirk/Library/Application Support/other/x""#)),
+            "prime",
+            "quoted write outside the worktree",
         );
     }
 

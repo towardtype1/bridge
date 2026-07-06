@@ -466,7 +466,9 @@ where
                 .as_ref()
                 .map(|l| l.mcp_config_path.clone()),
             append_system_prompt: Some(profile.append_system_prompt.clone()),
-            output_format: OutputFormat::Json,
+            // Stream so the GUI can watch the plan take shape live; the
+            // structured plan still arrives on the terminal result event.
+            output_format: OutputFormat::StreamJson,
             setting_sources: Vec::new(),
         };
         let ctx = TurnCtx {
@@ -1215,10 +1217,38 @@ where
         if let Err(e) = self.shared.deps.record_mission_complete(mission_id) {
             tracing::warn!("failed to record mission completion: {e}");
         }
+        // Honest final state: failed workstreams fail the mission; flagged
+        // ones (never merged) complete it with a warning detail.
+        let (failed, flagged) = {
+            let m = self.mission.as_ref().expect("mission checked above");
+            let with_status = |pred: fn(&WorkstreamStatus) -> bool| {
+                m.order
+                    .iter()
+                    .filter(|id| pred(&m.ws[id].status))
+                    .map(|id| m.ws[id].spec.slug.clone())
+                    .collect::<Vec<_>>()
+            };
+            (
+                with_status(|s| matches!(s, WorkstreamStatus::Failed { .. })),
+                with_status(|s| matches!(s, WorkstreamStatus::Flagged)),
+            )
+        };
+        let (state, detail) = if failed.is_empty() {
+            let detail = (!flagged.is_empty())
+                .then(|| format!("flagged (unmerged) workstreams: {}", flagged.join(", ")));
+            (MissionState::Complete, detail)
+        } else {
+            (
+                MissionState::Failed {
+                    reason: format!("workstreams failed: {}", failed.join(", ")),
+                },
+                None,
+            )
+        };
         self.shared.emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
             mission: mission_id,
-            state: MissionState::Complete,
-            detail: None,
+            state,
+            detail,
         }));
         self.exit = Some(Ok(()));
     }
