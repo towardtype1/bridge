@@ -1717,6 +1717,20 @@ async fn mid_mission_amendment_proposed_approved_and_new_workstream_starts() {
         )
     })
     .await;
+    // A positive signal follows application: the GUI's proposal card only
+    // clears on Executing, and wire consumers need something to observe
+    // the amendment actually applying by.
+    rig.wait_for("amendment applied signal", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                detail: Some(d),
+                ..
+            }) if d.contains("plan amended")
+        )
+    })
+    .await;
     // The amended plan was persisted.
     rig.wait_until("plan upserted", || {
         deps.recorded_missions
@@ -1858,6 +1872,172 @@ async fn resumed_mission_conference_recaps_when_session_cwd_mismatches() {
         captain[0].inv.prompt.contains("solo"),
         "recap names the workstream"
     );
+    rig.shutdown().await.unwrap();
+}
+
+/// Completion recheck fix: nothing re-ran `maybe_finish` after a
+/// mid-mission Captain turn cleared its `turn_in_flight`, so a mission
+/// whose last workstream merges while that turn is still running would
+/// never dispatch its Comms report. Hold a mid-mission turn open at a
+/// barrier, merge the sole workstream underneath it (merge_done's own
+/// `maybe_finish` call blocks on the in-flight turn), then release the
+/// turn and prove completion is re-checked.
+#[tokio::test(start_paused = true)]
+async fn mission_completes_after_captain_turn_clears_post_merge() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("solo", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("ship it").await;
+    let ws = rig.ws_id("solo");
+
+    // Hold a mid-mission captain turn open at a barrier while the sole
+    // workstream merges underneath it.
+    let barrier = Arc::new(Barrier::new(2));
+    *deps.captain_barrier.lock().unwrap() = Some(barrier.clone());
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Still thinking, no plan yet."
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "how's it going?".into(),
+    })
+    .await;
+    rig.wait_for(
+        "user echo",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "how's it going?"),
+    )
+    .await;
+
+    rig.wait_for("merge proposal", |e| {
+        matches!(e, BridgeEvent::MergeConfirmationRequested(_))
+    })
+    .await;
+    rig.send(BridgeCommand::ConfirmMerge {
+        workstream: ws,
+        approved: true,
+    })
+    .await;
+    rig.wait_for("workstream merged", |e| {
+        matches!(e, BridgeEvent::WorkstreamStatus { id, status: WorkstreamStatus::Merged } if *id == ws)
+    })
+    .await;
+
+    // Mission must NOT complete yet: the captain turn is still in flight.
+    // Force a bounded drain with a sentinel command first - commands are
+    // handled strictly sequentially against the event loop, so its
+    // rejection proves everything queued ahead of it has been processed -
+    // before asserting absence.
+    rig.send(BridgeCommand::ApproveProposal { revision: 999 })
+        .await;
+    rig.wait_for("sentinel rejected", |e| {
+        matches!(e, BridgeEvent::ProposalRejected { revision: 999, .. })
+    })
+    .await;
+    assert!(
+        !rig.collected.iter().any(|e| matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Complete,
+                ..
+            })
+        )),
+        "mission must not complete while the captain turn is in flight"
+    );
+
+    // Release the held turn; completion must now be re-checked.
+    barrier.wait().await;
+    *deps.captain_barrier.lock().unwrap() = None;
+    rig.wait_for("mission complete", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Complete,
+                ..
+            })
+        )
+    })
+    .await;
+
+    rig.shutdown().await.unwrap();
+}
+
+/// Fix: queued messages must not be reordered or stranded when a turn
+/// fails. All three `captain_done` failure arms return before the queue
+/// flush, so a message queued behind a turn that goes on to fail was
+/// previously sent alone by the next `SayToCaptain`, stranding the queued
+/// one to straggle in later out of order.
+#[tokio::test(start_paused = true)]
+async fn queued_message_survives_failed_turn_in_order() {
+    let deps = MockDeps::new();
+    let barrier = Arc::new(Barrier::new(2));
+    *deps.captain_barrier.lock().unwrap() = Some(barrier.clone());
+    deps.push_turn(Station::Captain, TurnResponse::Err("boom".into()));
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for(
+        "user echo go",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "go"),
+    )
+    .await;
+
+    // Queue "A" while turn 1 (scripted to fail) is held open at the barrier.
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "queued-A".into(),
+    })
+    .await;
+    rig.wait_for(
+        "user echo A",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "queued-A"),
+    )
+    .await;
+
+    barrier.wait().await;
+    *deps.captain_barrier.lock().unwrap() = None;
+    rig.wait_for(
+        "turn 1 failed",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("did not respond")),
+    )
+    .await;
+
+    // The user says something new while "A" is still queued.
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "new-B".into(),
+    })
+    .await;
+    rig.wait_for(
+        "user echo B",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "new-B"),
+    )
+    .await;
+    rig.wait_for(
+        "second turn's default reply",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("Plan ready")),
+    )
+    .await;
+
+    let captain_turns: Vec<_> = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .collect();
+    assert_eq!(
+        captain_turns.len(),
+        2,
+        "one failed turn, one combined retry turn"
+    );
+    let prompt = &captain_turns[1].inv.prompt;
+    let a_pos = prompt
+        .find("queued-A")
+        .expect("queued message A present in the next turn");
+    let b_pos = prompt
+        .find("new-B")
+        .expect("new message B present in the next turn");
+    assert!(a_pos < b_pos, "queued message A must precede new message B");
+
     rig.shutdown().await.unwrap();
 }
 

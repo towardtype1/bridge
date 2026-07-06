@@ -576,7 +576,13 @@ where
         if conf.turn_in_flight.is_some() || conf.approved {
             conf.queued.push_back(text);
         } else {
-            self.start_captain_turn(text);
+            // Any messages queued behind a now-finished turn (e.g. one that
+            // failed - the failure arms return before the queue flush) must
+            // be concatenated ahead of this new text, in order, rather than
+            // sent alone while the queued ones straggle in later.
+            conf.queued.push_back(text);
+            let msg = conf.queued.drain(..).collect::<Vec<_>>().join("\n\n");
+            self.start_captain_turn(msg);
         }
     }
 
@@ -802,6 +808,12 @@ where
             let msg = conf.queued.drain(..).collect::<Vec<_>>().join("\n\n");
             self.start_captain_turn(msg);
         }
+        // Completion recheck: this turn may have been the last thing
+        // blocking `maybe_finish` (e.g. the mission's final workstream
+        // merged while this Captain turn was in flight). Idempotent:
+        // `comms_dispatched` guards double dispatch, and a flush-started
+        // turn above re-blocks correctly via `turn_in_flight`.
+        self.maybe_finish();
     }
 
     /// Pre-launch (no running mission): full-plan validation. Mid-mission
@@ -964,14 +976,17 @@ where
         let mission = m.plan.mission_id;
         let statuses: HashMap<WorkstreamId, WorkstreamStatus> =
             m.ws.iter().map(|(id, w)| (*id, w.status.clone())).collect();
-        if let Err(e) = amendment::validate_amendment(&m.plan, &statuses, &draft) {
-            self.shared.emit(BridgeEvent::ProposalRejected {
-                mission,
-                revision,
-                reason: e,
-            });
-            return;
-        }
+        let diff = match amendment::validate_amendment(&m.plan, &statuses, &draft) {
+            Ok(diff) => diff,
+            Err(e) => {
+                self.shared.emit(BridgeEvent::ProposalRejected {
+                    mission,
+                    revision,
+                    reason: e,
+                });
+                return;
+            }
+        };
         let needs_base_ref_fallback = m.plan.workstreams.is_empty();
         let base_ref_fallback = if needs_base_ref_fallback {
             Some(
@@ -1118,6 +1133,20 @@ where
             c.approved = false;
         }
         self.start_eligible().await;
+        // Positive signal that the amendment actually applied: without this
+        // the GUI's proposal card only clears on Executing, and wire
+        // consumers have no event to observe the application by.
+        self.shared
+            .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
+                mission,
+                state: MissionState::Executing,
+                detail: Some(format!(
+                    "plan amended: +{} ~{} x{}",
+                    diff.added.len(),
+                    diff.revised.len(),
+                    diff.removed.len()
+                )),
+            }));
     }
 
     /// Install the plan as the running mission; `captain_turn` carries the
