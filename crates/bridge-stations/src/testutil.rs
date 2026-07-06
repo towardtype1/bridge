@@ -120,6 +120,7 @@ pub struct MockDeps {
     pub responses: Mutex<HashMap<Station, VecDeque<TurnResponse>>>,
     pub plan_draft: Mutex<serde_json::Value>,
     pub helm_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    pub captain_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     // -- git port --------------------------------------------------------
     pub git_calls: Mutex<Vec<GitCall>>,
     pub rebase_script: Mutex<VecDeque<RebaseOutcome>>,
@@ -153,6 +154,7 @@ impl MockDeps {
             responses: Mutex::new(HashMap::new()),
             plan_draft: Mutex::new(draft_json(&[("solo", &[])])),
             helm_barrier: Mutex::new(None),
+            captain_barrier: Mutex::new(None),
             git_calls: Mutex::new(Vec::new()),
             rebase_script: Mutex::new(VecDeque::new()),
             commits_ahead_script: Mutex::new(VecDeque::new()),
@@ -224,7 +226,10 @@ impl MockDeps {
 
     fn default_response(&self, ctx: &TurnCtx, inv: &ClaudeInvocation) -> TurnResponse {
         match ctx.station {
-            Station::Captain => TurnResponse::structured(self.plan_draft.lock().unwrap().clone()),
+            Station::Captain => TurnResponse::structured(serde_json::json!({
+                "message": "Plan ready for your approval.",
+                "proposed_plan": self.plan_draft.lock().unwrap().clone(),
+            })),
             Station::Helm => {
                 let name = inv
                     .cwd
@@ -280,10 +285,10 @@ impl TurnPort for MockDeps {
                 map.get_mut(&ctx.station).and_then(|q| q.pop_front())
             }
             .unwrap_or_else(|| self.default_response(&ctx, &inv));
-            let barrier = if ctx.station == Station::Helm {
-                self.helm_barrier.lock().unwrap().clone()
-            } else {
-                None
+            let barrier = match ctx.station {
+                Station::Helm => self.helm_barrier.lock().unwrap().clone(),
+                Station::Captain => self.captain_barrier.lock().unwrap().clone(),
+                _ => None,
             };
             if let Some(b) = barrier {
                 b.wait().await;

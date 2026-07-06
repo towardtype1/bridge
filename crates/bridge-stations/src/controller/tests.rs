@@ -70,10 +70,19 @@ impl Rig {
     }
 
     async fn start(&mut self, objective: &str) {
-        self.send(BridgeCommand::StartMission {
-            objective: objective.into(),
+        self.send(BridgeCommand::SayToCaptain {
+            text: objective.into(),
         })
         .await;
+        let proposed = self
+            .wait_for("plan proposed", |e| {
+                matches!(e, BridgeEvent::PlanProposed { .. })
+            })
+            .await;
+        let BridgeEvent::PlanProposed { revision, .. } = proposed else {
+            unreachable!()
+        };
+        self.send(BridgeCommand::ApproveProposal { revision }).await;
         self.wait_for("mission Executing", |e| {
             matches!(
                 e,
@@ -87,7 +96,15 @@ impl Rig {
     }
 
     fn plan(&self) -> MissionPlan {
-        self.deps.recorded_missions.lock().unwrap()[0].clone()
+        self.deps
+            .recorded_missions
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|p| !p.workstreams.is_empty())
+            .cloned()
+            .expect("a real plan was recorded")
     }
 
     fn ws_id(&self, slug: &str) -> WorkstreamId {
@@ -158,7 +175,7 @@ async fn full_mission_two_parallel_workstreams() {
     assert_eq!(captain_turns.len(), 1);
     assert_eq!(
         captain_turns[0].inv.json_schema,
-        Some(PlanDraft::json_schema())
+        Some(CaptainReply::json_schema())
     );
 
     // First (and so far only) merge proposal: the queue is serialized.
@@ -495,7 +512,9 @@ async fn rebase_conflict_gets_fix_order_and_fresh_round_before_confirmation() {
 async fn budget_exhaustion_pauses_dispatch_and_extend_resumes() {
     let deps = MockDeps::new();
     let mut config = BridgeConfig::default();
-    config.budgets.max_total_turns = 1; // captain consumes the only turn
+    // Captain conference turns are governed by captain.max_conference_turns,
+    // not this budget, so the gate must bite before the first Helm turn.
+    config.budgets.max_total_turns = 0;
     let mut rig = spawn_rig(deps.clone(), config, None);
     rig.start("tiny budget").await;
 
@@ -1083,6 +1102,193 @@ async fn provisioning_emits_worktree_path() {
     })
     .await;
     let _ = rig.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// pre-launch Captain conference
+
+#[tokio::test(start_paused = true)]
+async fn conference_converses_then_proposes_then_launches_on_approval() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("solo", &[])]);
+    // First turn: pure conversation, no plan.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "What does done look like?",
+        })),
+    );
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "ship it".into(),
+    })
+    .await;
+    rig.wait_for(
+        "user echo",
+        |e| matches!(e, BridgeEvent::UserSaid { text, .. } if text == "ship it"),
+    )
+    .await;
+    rig.wait_for(
+        "captain question",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("done")),
+    )
+    .await;
+    // No proposal yet; approving revision 1 must be rejected.
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("no-proposal rejection", |e| {
+        matches!(e, BridgeEvent::ProposalRejected { .. })
+    })
+    .await;
+
+    // Second exchange: default response proposes the plan.
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "tests pass".into(),
+    })
+    .await;
+    let BridgeEvent::PlanProposed { revision, diff, .. } = rig
+        .wait_for("proposal", |e| {
+            matches!(e, BridgeEvent::PlanProposed { .. })
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    assert_eq!(revision, 1);
+    assert!(diff.is_none(), "pre-launch proposal has no diff");
+
+    rig.send(BridgeCommand::ApproveProposal { revision }).await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+
+    // Two conference turns ran, both resumable-schema'd; second resumed.
+    let captain: Vec<_> = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .collect();
+    assert_eq!(captain.len(), 2);
+    assert_eq!(captain[0].inv.resume, None);
+    assert_eq!(captain[1].inv.resume, Some(SessionId::from("mock-session")));
+    // Conference turns recorded to the computer against the mission.
+    assert!(deps.recorded_turns.lock().unwrap().len() >= 2);
+    // Session persisted with repo_root cwd.
+    {
+        let sessions = deps.recorded_sessions.lock().unwrap();
+        assert!(!sessions.is_empty());
+        assert_eq!(sessions[0].1, Station::Captain);
+    }
+
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn in_flight_turn_proposal_discarded_after_approval() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("keep", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for("rev 1", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 1, .. })
+    })
+    .await;
+
+    // Hold the next captain turn open at a barrier while we approve rev 1.
+    let barrier = Arc::new(Barrier::new(2));
+    *deps.captain_barrier.lock().unwrap() = Some(barrier.clone());
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Late proposal incoming.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "late", "title": "Late", "description": "Late", "depends_on": [] }
+            ]}
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "one more tweak".into(),
+    })
+    .await;
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+
+    // Release the held turn; its message must surface, its proposal must not.
+    barrier.wait().await;
+    rig.wait_for("late message emitted", |e| {
+        matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("Late proposal incoming"))
+    })
+    .await;
+    // `captain_done` for the late turn keeps running past the CaptainSays
+    // emission (its proposal handling awaits a blocking call), so the event
+    // above lands before that processing finishes. Force the event loop to
+    // fully drain it: commands are handled strictly sequentially, so a
+    // sentinel with a revision that can never match is only processed after
+    // the late turn's captain_done call has completely finished.
+    rig.send(BridgeCommand::ApproveProposal { revision: 999 })
+        .await;
+    rig.wait_for("sentinel rejected", |e| {
+        matches!(e, BridgeEvent::ProposalRejected { revision: 999, .. })
+    })
+    .await;
+    assert!(
+        !rig.collected
+            .iter()
+            .any(|e| matches!(e, BridgeEvent::PlanProposed { revision: 2, .. })),
+        "in-flight proposal must be discarded after approval"
+    );
+    // Launched plan is rev 1's.
+    assert_eq!(rig.plan().workstreams[0].slug, "keep");
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn planning_state_emitted_at_conference_open_and_mission_recorded() {
+    let deps = MockDeps::new();
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "objective".into(),
+    })
+    .await;
+    rig.wait_for("planning state", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Planning,
+                ..
+            })
+        )
+    })
+    .await;
+    rig.wait_until("placeholder mission recorded", || {
+        !deps.recorded_missions.lock().unwrap().is_empty()
+    })
+    .await;
+    assert!(
+        deps.recorded_missions.lock().unwrap()[0]
+            .workstreams
+            .is_empty()
+    );
+    rig.shutdown().await.unwrap();
 }
 
 // ---------------------------------------------------------------------------
