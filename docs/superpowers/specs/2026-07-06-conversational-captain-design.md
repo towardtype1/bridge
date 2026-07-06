@@ -31,9 +31,9 @@ After launch the same conversation stays available: the Captain can answer quest
 There is no review step, no dialogue, and no way to talk to the Captain after launch.
 `BridgeCommand::StartMission { objective }` is the only entry point.
 
-A load-bearing gap discovered during design: session resumption is only half-built.
-`bridge-engine` exports `SessionRegistry`, but nothing wires it; the runner only logs `init.session_id`, `TurnOutcome` does not carry it, and the controller passes `resume: None` on every invocation.
-This spec owns closing that gap for the Captain; Helm turns can adopt the same plumbing later without design changes.
+A load-bearing discovery from grounding: session resumption is half-built, but the persistence layer is complete.
+The controller passes `resume: None` on every invocation today, yet the session id is already delivered on the terminal result event (`ResultEvent::session_id`), and `ComputerPort::record_session` / `session_for` already persist sessions per (workstream, station) with a cwd column.
+This spec wires the Captain onto that existing path; `bridge-engine`'s exported-but-unwired `SessionRegistry` is not needed and stays untouched.
 
 ## Design
 
@@ -108,10 +108,11 @@ Cancellation gets an honest terminal state: a new `WorkstreamStatus::Cancelled` 
 
 ### Session continuity
 
-The runner captures `session_id` from the stream init event into a new `TurnOutcome::session: Option<SessionId>` field.
-The controller records it in the (already existing, currently unwired) `SessionRegistry` under `(captain_ws, Station::Captain)` with `repo_root` as cwd, and passes `resume: registry.resumable(...)` on every subsequent conference turn.
-The registry is hydrated from and persisted to the Ship's Computer through the existing sessions table, so an app restart with a resumed mission continues the same conversation.
-If resume fails or the registry refuses (cwd mismatch), the conference falls back to a fresh session whose first message is a generated recap: the objective, the current plan, and each workstream's status.
+After each successful conference turn, the controller takes `ResultEvent::session_id` from the turn outcome, stores it on the conference, and persists it via the existing `ComputerPort::record_session` under `(captain_ws, Station::Captain)` with `repo_root` as cwd.
+Every subsequent conference turn passes `resume: Some(session)`.
+On app restart with a resumed mission, the mid-mission conference hydrates its session through `ComputerPort::session_for`; a recorded cwd that differs from `repo_root` is treated as no session (directory-scoped resume would silently fail).
+If no session can be resumed, the conference falls back to a fresh session whose first message is a generated recap: the objective, the current plan, and each workstream's status.
+No engine changes are required; `bridge-engine`'s unwired `SessionRegistry` stays unused.
 
 ### Budgets and accounting
 
