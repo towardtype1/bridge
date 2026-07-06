@@ -35,6 +35,8 @@ pub struct BridgeConfig {
     pub linear: Option<LinearConfig>,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub captain: CaptainConfig,
 }
 
 impl BridgeConfig {
@@ -242,6 +244,22 @@ impl Default for UiConfig {
     }
 }
 
+/// Captain conference limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CaptainConfig {
+    /// Total Captain conference turns per mission (both phases).
+    pub max_conference_turns: u32,
+}
+
+impl Default for CaptainConfig {
+    fn default() -> Self {
+        Self {
+            max_conference_turns: 24,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +321,12 @@ mod tests {
         assert_eq!(cfg.ui.editor_command, "code");
         let parsed: BridgeConfig = toml::from_str("[ui]\neditor_command = \"cursor\"\n").unwrap();
         assert_eq!(parsed.ui.editor_command, "cursor");
+    }
+
+    #[test]
+    fn captain_config_defaults_and_parses() {
+        assert_eq!(BridgeConfig::default().captain.max_conference_turns, 24);
+        let c: BridgeConfig = toml::from_str("[captain]\nmax_conference_turns = 5\n").unwrap();
+        assert_eq!(c.captain.max_conference_turns, 5);
     }
 }

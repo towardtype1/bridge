@@ -67,6 +67,90 @@ impl PlanDraft {
     }
 }
 
+/// One Captain conference turn: conversation plus an optional full plan
+/// proposal. The Captain always re-emits the whole desired plan; diffs
+/// are computed controller-side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptainReply {
+    pub message: String,
+    #[serde(default)]
+    pub proposed_plan: Option<PlanDraft>,
+}
+
+impl CaptainReply {
+    /// JSON Schema handed to `claude --json-schema` for every conference turn.
+    pub fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" },
+                "proposed_plan": {
+                    "anyOf": [PlanDraft::json_schema(), { "type": "null" }]
+                }
+            },
+            "required": ["message"]
+        })
+    }
+}
+
+/// Slug-level difference between the current plan and a proposed draft.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlanDiff {
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub revised: Vec<String>,
+}
+
+impl PlanDiff {
+    pub fn between(current: &MissionPlan, draft: &PlanDraft) -> PlanDiff {
+        let id_to_slug: HashMap<_, _> = current
+            .workstreams
+            .iter()
+            .map(|w| (w.id, w.slug.clone()))
+            .collect();
+        let current_deps = |id| -> HashSet<String> {
+            current
+                .edges
+                .iter()
+                .filter(|(_, b)| *b == id)
+                .map(|(a, _)| id_to_slug[a].clone())
+                .collect()
+        };
+        let draft_by_slug: HashMap<_, _> = draft
+            .workstreams
+            .iter()
+            .map(|w| (w.slug.clone(), w))
+            .collect();
+        let mut diff = PlanDiff::default();
+        for spec in &current.workstreams {
+            match draft_by_slug.get(&spec.slug) {
+                None => diff.removed.push(spec.slug.clone()),
+                Some(d) => {
+                    let draft_deps: HashSet<String> = d.depends_on.iter().cloned().collect();
+                    if d.title != spec.title
+                        || d.description != spec.description
+                        || draft_deps != current_deps(spec.id)
+                    {
+                        diff.revised.push(spec.slug.clone());
+                    }
+                }
+            }
+        }
+        let current_slugs: HashSet<_> =
+            current.workstreams.iter().map(|w| w.slug.clone()).collect();
+        for w in &draft.workstreams {
+            if !current_slugs.contains(&w.slug) {
+                diff.added.push(w.slug.clone());
+            }
+        }
+        diff
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.revised.is_empty()
+    }
+}
+
 /// A validated plan with harness-assigned workstream ids.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MissionPlan {
@@ -352,5 +436,87 @@ mod tests {
         assert!(value["workstreams"].is_array());
         let schema = PlanDraft::json_schema();
         assert_eq!(schema["required"][0], "workstreams");
+    }
+
+    #[test]
+    fn captain_reply_schema_requires_message_and_embeds_plan() {
+        let s = CaptainReply::json_schema();
+        assert_eq!(s["required"], serde_json::json!(["message"]));
+        let embedded = &s["properties"]["proposed_plan"]["anyOf"][0];
+        assert_eq!(*embedded, PlanDraft::json_schema());
+    }
+
+    #[test]
+    fn captain_reply_parses_with_and_without_plan() {
+        let with: CaptainReply = serde_json::from_value(serde_json::json!({
+            "message": "Plan ready.",
+            "proposed_plan": { "workstreams": [
+                { "slug": "a", "title": "A", "description": "Do A", "depends_on": [] }
+            ]}
+        }))
+        .unwrap();
+        assert!(with.proposed_plan.is_some());
+        let without: CaptainReply =
+            serde_json::from_value(serde_json::json!({ "message": "Question?" })).unwrap();
+        assert!(without.proposed_plan.is_none());
+        let null_plan: CaptainReply =
+            serde_json::from_value(serde_json::json!({ "message": "Hmm.", "proposed_plan": null }))
+                .unwrap();
+        assert!(null_plan.proposed_plan.is_none());
+    }
+
+    #[test]
+    fn plan_diff_between_classifies_added_removed_revised() {
+        let draft_v1 = PlanDraft {
+            workstreams: vec![
+                PlanDraftWorkstream {
+                    slug: "keep".into(),
+                    title: "K".into(),
+                    description: "d".into(),
+                    depends_on: vec![],
+                },
+                PlanDraftWorkstream {
+                    slug: "gone".into(),
+                    title: "G".into(),
+                    description: "d".into(),
+                    depends_on: vec![],
+                },
+                PlanDraftWorkstream {
+                    slug: "edit".into(),
+                    title: "E".into(),
+                    description: "old".into(),
+                    depends_on: vec![],
+                },
+            ],
+        };
+        let current =
+            MissionPlan::from_draft(draft_v1, MissionId::new(), "m", "obj", "main").unwrap();
+        let draft_v2 = PlanDraft {
+            workstreams: vec![
+                PlanDraftWorkstream {
+                    slug: "keep".into(),
+                    title: "K".into(),
+                    description: "d".into(),
+                    depends_on: vec![],
+                },
+                PlanDraftWorkstream {
+                    slug: "edit".into(),
+                    title: "E".into(),
+                    description: "new".into(),
+                    depends_on: vec!["keep".into()],
+                },
+                PlanDraftWorkstream {
+                    slug: "fresh".into(),
+                    title: "F".into(),
+                    description: "d".into(),
+                    depends_on: vec![],
+                },
+            ],
+        };
+        let diff = PlanDiff::between(&current, &draft_v2);
+        assert_eq!(diff.added, vec!["fresh".to_string()]);
+        assert_eq!(diff.removed, vec!["gone".to_string()]);
+        assert_eq!(diff.revised, vec!["edit".to_string()]);
+        assert!(!diff.is_empty());
     }
 }
