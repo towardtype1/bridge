@@ -28,6 +28,11 @@ pub enum BridgeCommand {
     OverrideFlagged { workstream: WorkstreamId },
     /// Graceful shutdown: terminate children, persist state, clean up.
     Shutdown,
+    /// Re-emit all currently-actionable one-shot signals (open escalations
+    /// and pending merge proposals). A consumer sends this after it detects
+    /// it lagged the event bus, so a dropped `EscalationRequested` /
+    /// `MergeConfirmationRequested` cannot silently strand the mission.
+    ResyncActionable,
 }
 
 /// Additional headroom granted to a paused mission. Zero fields leave the

@@ -63,6 +63,11 @@ pub trait TacticalPort: Send + Sync + 'static {
     /// (the hook already failed closed). Default no-op keeps mocks that
     /// never raise hook escalations compiling.
     fn resolve_hook_escalation(&self, _id: EscalationId, _decision: UserDecision) {}
+    /// Tickets of every currently-open hook escalation, for re-emission on a
+    /// resync after a lagged event bus. Default empty.
+    fn pending_hook_escalations(&self) -> Vec<bridge_core::EscalationTicket> {
+        Vec::new()
+    }
 }
 
 pub trait ComputerPort: Send + Sync + 'static {
@@ -163,6 +168,9 @@ impl TacticalPort for LiveDeps {
     }
     fn resolve_hook_escalation(&self, id: EscalationId, decision: UserDecision) {
         self.broker.resolve(id, decision);
+    }
+    fn pending_hook_escalations(&self) -> Vec<bridge_core::EscalationTicket> {
+        self.broker.pending_tickets()
     }
 }
 

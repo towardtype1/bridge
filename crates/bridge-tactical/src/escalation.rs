@@ -10,7 +10,14 @@ use tokio::sync::oneshot;
 /// awaits (with timeout); `resolve` is called from the GUI command path.
 /// Timeout or a dropped ticket resolves as deny (fail closed).
 pub struct EscalationBroker {
-    pending: Mutex<HashMap<EscalationId, oneshot::Sender<UserDecision>>>,
+    pending: Mutex<HashMap<EscalationId, Pending>>,
+}
+
+struct Pending {
+    sender: oneshot::Sender<UserDecision>,
+    /// Retained so the broker can re-emit open tickets on a resync request
+    /// (recovering from a dropped `EscalationRequested` on a lagged bus).
+    ticket: EscalationTicket,
 }
 
 impl EscalationBroker {
@@ -30,7 +37,7 @@ impl EscalationBroker {
         self.pending
             .lock()
             .expect("escalation registry poisoned")
-            .insert(ticket.id, tx);
+            .insert(ticket.id, Pending { sender: tx, ticket });
         rx
     }
 
@@ -38,16 +45,27 @@ impl EscalationBroker {
     /// already failed closed). Always removes the id from the pending set,
     /// so the server also calls this on timeout to clean up.
     pub fn resolve(&self, id: EscalationId, decision: UserDecision) {
-        let sender = self
+        let entry = self
             .pending
             .lock()
             .expect("escalation registry poisoned")
             .remove(&id);
-        if let Some(tx) = sender {
+        if let Some(entry) = entry {
             // A dropped receiver (timed-out hook) makes this send fail;
             // that is fine, the hook already resolved to deny.
-            let _ = tx.send(decision);
+            let _ = entry.sender.send(decision);
         }
+    }
+
+    /// Full tickets of every currently-open hook escalation, for re-emission
+    /// on a resync after a lagged event bus.
+    pub fn pending_tickets(&self) -> Vec<EscalationTicket> {
+        self.pending
+            .lock()
+            .expect("escalation registry poisoned")
+            .values()
+            .map(|p| p.ticket.clone())
+            .collect()
     }
 
     /// Await a decision with a deadline; None (timeout / dropped sender)

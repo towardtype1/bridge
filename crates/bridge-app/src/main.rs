@@ -24,7 +24,9 @@ mod state;
 mod ui;
 mod wiring;
 
-use bridge_core::{BridgeCommand, BridgeConfig, BridgeEvent, MissionState, UserDecision};
+use bridge_core::{
+    BridgeCommand, BridgeConfig, BridgeEvent, MissionState, UserDecision, WorkstreamStatus,
+};
 use state::AppState;
 use std::path::PathBuf;
 use tokio::sync::{broadcast, mpsc};
@@ -142,7 +144,11 @@ impl BridgeApp {
             match self.events_rx.try_recv() {
                 Ok(event) => self.state.apply(event),
                 Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "GUI lagged behind the event bus");
+                    // A dropped EscalationRequested / MergeConfirmationRequested
+                    // would silently strand the mission, so ask the controller
+                    // to re-emit all actionable signals.
+                    tracing::warn!(skipped, "GUI lagged the event bus; requesting resync");
+                    self.out_commands.push(BridgeCommand::ResyncActionable);
                 }
                 Err(broadcast::error::TryRecvError::Empty)
                 | Err(broadcast::error::TryRecvError::Closed) => break,
@@ -228,7 +234,8 @@ fn run_headless(
         let event = match events_rx.blocking_recv() {
             Ok(event) => event,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(skipped, "headless driver lagged behind the event bus");
+                tracing::warn!(skipped, "headless driver lagged the event bus; requesting resync");
+                wiring.commands.blocking_send(BridgeCommand::ResyncActionable)?;
                 continue;
             }
             Err(broadcast::error::RecvError::Closed) => {
@@ -250,6 +257,16 @@ fn run_headless(
                     workstream: proposal.workstream,
                     approved: true,
                 })?;
+            }
+            // A flagged workstream (breached past max Kobayashi rounds) awaits
+            // a human decision. The unattended driver accepts the flag and
+            // winds the mission down rather than merging unreviewed breached
+            // code; without this the mission would wait for a user forever.
+            BridgeEvent::WorkstreamStatus {
+                status: WorkstreamStatus::Flagged,
+                ..
+            } => {
+                wiring.commands.blocking_send(BridgeCommand::WindDown)?;
             }
             BridgeEvent::MissionStatus(update) => match &update.state {
                 MissionState::Complete => break,

@@ -241,6 +241,10 @@ enum Internal {
     /// Deferred Comms dispatch (breaks recursion through maybe_finish).
     DispatchComms,
     RateLimitProbe,
+    /// A pre-dispatch screening escalation hit its deadline unanswered.
+    EscalationTimeout {
+        id: EscalationId,
+    },
 }
 
 struct RebaseData {
@@ -293,7 +297,11 @@ struct Mission {
     max_wall_clock_secs: Option<u64>,
     paused: Option<PauseReason>,
     pending: VecDeque<Dispatch>,
-    escalations: HashMap<EscalationId, Dispatch>,
+    /// Open order-screening escalations: the ticket (retained so it can be
+    /// re-emitted on a resync) and the dispatch it is gating.
+    escalations: HashMap<EscalationId, (EscalationTicket, Dispatch)>,
+    /// Merge proposals awaiting user confirmation, retained for resync.
+    pending_merges: HashMap<WorkstreamId, MergeProposal>,
     comms_dispatched: bool,
 }
 
@@ -428,6 +436,7 @@ where
             BridgeCommand::Shutdown => {
                 self.exit = Some(Ok(()));
             }
+            BridgeCommand::ResyncActionable => self.resync_actionable(),
         }
     }
 
@@ -449,6 +458,25 @@ where
             }
             Internal::DispatchComms => self.dispatch_now(Dispatch::Comms).await,
             Internal::RateLimitProbe => self.rate_limit_probe().await,
+            Internal::EscalationTimeout { id } => self.escalation_timeout(id).await,
+        }
+    }
+
+    /// A pre-dispatch screening escalation went unanswered for its timeout;
+    /// fail closed to Deny so the mission cannot wedge on it. A no-op if the
+    /// user already resolved it (id no longer pending).
+    async fn escalation_timeout(&mut self, id: EscalationId) {
+        let still_pending = self
+            .mission
+            .as_ref()
+            .is_some_and(|m| m.escalations.contains_key(&id));
+        if still_pending {
+            tracing::warn!("screening escalation {id} timed out; denying (fail closed)");
+            self.resolve_escalation(
+                id,
+                UserDecision::Deny { reason: "screening escalation timed out".into() },
+            )
+            .await;
         }
     }
 
@@ -630,6 +658,7 @@ where
             paused: None,
             pending: VecDeque::new(),
             escalations: HashMap::new(),
+            pending_merges: HashMap::new(),
             comms_dispatched: false,
             plan,
         };
@@ -766,9 +795,19 @@ where
                     requested_at: Utc::now(),
                     expires_at: Utc::now() + chrono::Duration::seconds(timeout as i64),
                 };
-                let Some(m) = self.mission.as_mut() else { return };
-                m.escalations.insert(ticket.id, dispatch);
+                let id = ticket.id;
+                {
+                    let Some(m) = self.mission.as_mut() else { return };
+                    m.escalations.insert(id, (ticket.clone(), dispatch));
+                }
                 self.shared.emit(BridgeEvent::EscalationRequested(ticket));
+                // Fail closed if the user never answers: after the timeout,
+                // deny the order rather than wedging the mission.
+                let tx = self.shared.internal_tx.clone();
+                self.shared.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(timeout)).await;
+                    let _ = tx.send(Internal::EscalationTimeout { id }).await;
+                });
             }
         }
     }
@@ -1195,6 +1234,11 @@ where
                 let max_rounds = self.shared.config.budgets.max_kobayashi_rounds;
                 if round >= max_rounds {
                     // Stayed breached: merge only via explicit user override.
+                    // The mission deliberately does NOT auto-complete here: a
+                    // flagged workstream awaits an explicit user decision
+                    // (OverrideFlagged to merge anyway, or WindDown to settle).
+                    // The GUI surfaces this; unattended drivers act on the
+                    // Flagged event themselves (see the headless driver).
                     self.set_status(ws, WorkstreamStatus::Flagged);
                     if merge_gate {
                         self.abandon_queue_entry(ws).await;
@@ -1442,13 +1486,11 @@ where
                     .unwrap_or_default()
             }
         };
-        self.shared.emit(BridgeEvent::MergeConfirmationRequested(MergeProposal {
-            workstream: ws,
-            branch,
-            target,
-            summary,
-            diff_stat,
-        }));
+        let proposal = MergeProposal { workstream: ws, branch, target, summary, diff_stat };
+        if let Some(m) = self.mission.as_mut() {
+            m.pending_merges.insert(ws, proposal.clone());
+        }
+        self.shared.emit(BridgeEvent::MergeConfirmationRequested(proposal));
     }
 
     async fn confirm_merge(&mut self, ws: WorkstreamId, approved: bool) {
@@ -1457,6 +1499,7 @@ where
             tracing::warn!("ConfirmMerge for {ws} ignored: not awaiting confirmation");
             return;
         }
+        m.pending_merges.remove(&ws);
         if !approved {
             self.set_status(ws, WorkstreamStatus::Failed { reason: "merge rejected by user".into() });
             self.abandon_queue_entry(ws).await;
@@ -1544,6 +1587,7 @@ where
     async fn abandon_queue_entry(&mut self, ws: WorkstreamId) {
         let removed = {
             let Some(m) = self.mission.as_mut() else { return };
+            m.pending_merges.remove(&ws);
             if m.queue.contains(ws) {
                 m.queue.remove(ws);
                 if let Some(w) = m.ws.get_mut(&ws) {
@@ -1667,6 +1711,30 @@ where
         }
     }
 
+    /// Re-emit every currently-actionable one-shot signal. Called when a
+    /// consumer detects it lagged the broadcast bus and may have dropped an
+    /// `EscalationRequested` / `MergeConfirmationRequested`. Idempotent: the
+    /// events are the same tickets/proposals still held in state.
+    fn resync_actionable(&mut self) {
+        // Hook escalations live on the control server's broker.
+        for ticket in self.shared.deps.pending_hook_escalations() {
+            self.shared.emit(BridgeEvent::EscalationRequested(ticket));
+        }
+        let (tickets, proposals) = {
+            let Some(m) = self.mission.as_ref() else { return };
+            (
+                m.escalations.values().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
+                m.pending_merges.values().cloned().collect::<Vec<_>>(),
+            )
+        };
+        for ticket in tickets {
+            self.shared.emit(BridgeEvent::EscalationRequested(ticket));
+        }
+        for proposal in proposals {
+            self.shared.emit(BridgeEvent::MergeConfirmationRequested(proposal));
+        }
+    }
+
     async fn resolve_escalation(&mut self, id: EscalationId, decision: UserDecision) {
         let dispatch = {
             let Some(m) = self.mission.as_mut() else {
@@ -1675,7 +1743,7 @@ where
                 self.shared.emit(BridgeEvent::EscalationResolved { id, decision });
                 return;
             };
-            m.escalations.remove(&id)
+            m.escalations.remove(&id).map(|(_ticket, dispatch)| dispatch)
         };
         let Some(dispatch) = dispatch else {
             // Not a controller order-screening ticket: it belongs to the
@@ -1716,6 +1784,9 @@ where
                 && m.escalations.is_empty()
                 && m.queue.is_empty()
                 && self.planning.is_none();
+            // Flagged is deliberately NOT settled: the mission waits for the
+            // user to OverrideFlagged or WindDown. winding_down collapses all
+            // remaining states to settled so a wind-down always terminates.
             let all_settled = m.ws.values().all(|w| {
                 matches!(
                     w.status,

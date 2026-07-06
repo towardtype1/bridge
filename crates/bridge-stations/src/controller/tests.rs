@@ -603,6 +603,44 @@ async fn screen_needs_review_denied_fails_the_workstream() {
     assert!(matches!(rig.finish().await, Ok(())));
 }
 
+#[tokio::test(start_paused = true)]
+async fn unanswered_screening_escalation_times_out_to_deny() {
+    // A screening escalation the user never answers must not wedge the
+    // mission: after escalation_timeout_secs it fails closed to Deny.
+    let deps = MockDeps::new();
+    let flagged_once = AtomicBool::new(false);
+    deps.set_screen_fn(move |order| {
+        if order.station == Station::Helm && !flagged_once.swap(true, Ordering::SeqCst) {
+            bridge_tactical::ScreenResult::NeedsReview { flags: vec!["sus".into()] }
+        } else {
+            bridge_tactical::ScreenResult::Cleared
+        }
+    });
+    let mut config = BridgeConfig::default();
+    config.tactical.escalation_timeout_secs = 30;
+    let mut rig = spawn_rig(deps.clone(), config, None);
+    rig.start("timeout mission").await;
+
+    rig.wait_for("escalation requested", |e| {
+        matches!(e, BridgeEvent::EscalationRequested(_))
+    })
+    .await;
+
+    // Advance past the deadline without answering.
+    tokio::time::advance(Duration::from_secs(31)).await;
+
+    rig.wait_for("workstream failed on timeout", |e| {
+        matches!(
+            e,
+            BridgeEvent::WorkstreamStatus { status: WorkstreamStatus::Failed { reason }, .. }
+                if reason.contains("timed out")
+        )
+    })
+    .await;
+    assert!(!deps.turn_log().iter().any(|t| t.station == Station::Helm));
+    assert!(matches!(rig.finish().await, Ok(())));
+}
+
 // ---------------------------------------------------------------------------
 // 5b. a hook (broker) escalation id is forwarded to the control server
 
@@ -637,6 +675,51 @@ async fn resolve_escalation_forwards_hook_ticket_to_broker() {
     })
     .await;
 
+    let _ = rig.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 5c. resync re-emits open actionable signals (broadcast-lag recovery)
+
+#[tokio::test(start_paused = true)]
+async fn resync_reemits_open_escalations() {
+    let deps = MockDeps::new();
+    let flagged_once = AtomicBool::new(false);
+    deps.set_screen_fn(move |order| {
+        if order.station == Station::Helm && !flagged_once.swap(true, Ordering::SeqCst) {
+            bridge_tactical::ScreenResult::NeedsReview { flags: vec!["sus".into()] }
+        } else {
+            bridge_tactical::ScreenResult::Cleared
+        }
+    });
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.start("resync mission").await;
+
+    let ev = rig
+        .wait_for("first escalation", |e| matches!(e, BridgeEvent::EscalationRequested(_)))
+        .await;
+    let BridgeEvent::EscalationRequested(original) = ev else { unreachable!() };
+
+    // Simulate a consumer that lagged and lost the event: ask for a resync.
+    rig.send(BridgeCommand::ResyncActionable).await;
+    let ev = rig
+        .wait_for("re-emitted escalation", |e| {
+            matches!(e, BridgeEvent::EscalationRequested(t) if t.id == original.id)
+        })
+        .await;
+    let BridgeEvent::EscalationRequested(reemitted) = ev else { unreachable!() };
+    assert_eq!(reemitted.id, original.id, "same ticket re-emitted on resync");
+
+    // Resolving it once still works (not duplicated into two live tickets).
+    rig.send(BridgeCommand::ResolveEscalation {
+        id: original.id,
+        decision: UserDecision::Approve,
+    })
+    .await;
+    rig.wait_for("resolved", |e| {
+        matches!(e, BridgeEvent::EscalationResolved { id, .. } if *id == original.id)
+    })
+    .await;
     let _ = rig.shutdown().await;
 }
 
