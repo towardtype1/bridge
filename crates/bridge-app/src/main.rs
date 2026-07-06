@@ -24,6 +24,7 @@
 //! and exits when the mission reaches Complete (0) or Failed (1).
 
 mod state;
+mod theme;
 mod ui;
 mod wiring;
 
