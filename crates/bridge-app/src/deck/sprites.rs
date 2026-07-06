@@ -246,7 +246,10 @@ pub enum ConsoleVisual {
 pub fn console_visual(status: &WorkstreamStatus) -> ConsoleVisual {
     use WorkstreamStatus as S;
     match status {
-        S::Pending => ConsoleVisual::Dim,
+        // Cancelled's slot releases on the very next scene sync (see
+        // `scene::is_departed`), so this visual is only ever seen for the
+        // one transient frame before that - dim, same as an empty console.
+        S::Pending | S::Cancelled => ConsoleVisual::Dim,
         S::Working => ConsoleVisual::Working,
         S::UnderTest { .. } => ConsoleVisual::UnderTest,
         S::Breached { .. } => ConsoleVisual::Breached,
@@ -330,6 +333,7 @@ mod tests {
             (S::Merged, ConsoleVisual::Merged),
             (S::Failed { reason: "x".into() }, ConsoleVisual::Stuck),
             (S::Flagged, ConsoleVisual::Stuck),
+            (S::Cancelled, ConsoleVisual::Dim),
         ];
         for (status, expect) in all {
             assert_eq!(console_visual(&status), expect, "{status:?}");

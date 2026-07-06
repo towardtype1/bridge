@@ -142,10 +142,12 @@ pub struct SceneState {
 
 /// True once a workstream has reached a terminal, departed state: its
 /// console slot may be reclaimed once its agent has also left the deck.
+/// Merged and Cancelled both depart - a cancelled workstream never had (or
+/// no longer needs) an agent, so its slot frees on the very next sync.
 fn is_departed(app: &AppState, id: &WorkstreamId) -> bool {
     matches!(
         app.workstreams.get(id).and_then(|p| p.status.as_ref()),
-        Some(WorkstreamStatus::Merged)
+        Some(WorkstreamStatus::Merged | WorkstreamStatus::Cancelled)
     )
 }
 
@@ -260,7 +262,11 @@ impl SceneState {
             let became = |m: fn(&WorkstreamStatus) -> bool| {
                 status.as_ref().is_some_and(m) && !prev.is_some_and(m)
             };
-            if became(|s| matches!(s, WorkstreamStatus::Merged))
+            // Merged and Cancelled both depart the deck (see `is_departed`);
+            // an already-seated agent (e.g. a Pending workstream cancelled
+            // by a mid-mission amendment) leaves the same way a merged
+            // one does, so its slot can actually be reclaimed.
+            if became(|s| matches!(s, WorkstreamStatus::Merged | WorkstreamStatus::Cancelled))
                 && let Some(a) = self.agents.iter_mut().find(|a| a.ws == *id)
             {
                 if reduce_motion {
@@ -414,6 +420,51 @@ mod tests {
         assert_eq!(
             scene.consoles[0].visual,
             crate::deck::sprites::ConsoleVisual::Merged
+        );
+
+        // Next sync: the departed workstream's agent is gone, so its slot
+        // frees and goes to the earliest unslotted, still-live workstream.
+        scene.sync(&app, 1.1, true);
+        assert_eq!(
+            scene.consoles[0].ws,
+            Some(ids[8]),
+            "freed slot goes to the earliest unslotted workstream"
+        );
+        assert_eq!(scene.overflow, 0);
+        assert!(
+            scene.agents.iter().any(|a| a.ws == ids[8]),
+            "the ninth workstream gets a walk-in agent once it is slotted"
+        );
+    }
+
+    #[test]
+    fn cancelling_early_workstream_frees_its_slot_for_the_ninth() {
+        let mut app = app_with(&vec![WorkstreamStatus::Working; 9]);
+        let ids = app.workstream_order.clone();
+        let mut scene = SceneState::default();
+        scene.sync(&app, 0.0, true); // reduce_motion: agents seated instantly
+
+        // First 8 slotted in order; the 9th overflows with no console/agent.
+        assert_eq!(scene.consoles.len(), MAX_CONSOLES);
+        assert_eq!(scene.overflow, 1);
+
+        // Cancel the first workstream (e.g. a mid-mission amendment removed
+        // it). Like Merged, its slot isn't reclaimed until its agent has
+        // actually departed - this sync sees it cancelled but the agent is
+        // still present from last frame, so nothing moves yet.
+        app.apply(BridgeEvent::WorkstreamStatus {
+            id: ids[0],
+            status: WorkstreamStatus::Cancelled,
+        });
+        scene.sync(&app, 1.0, true);
+        assert_eq!(
+            scene.consoles[0].ws,
+            Some(ids[0]),
+            "slot holds dim while its agent is still walking out"
+        );
+        assert_eq!(
+            scene.consoles[0].visual,
+            crate::deck::sprites::ConsoleVisual::Dim
         );
 
         // Next sync: the departed workstream's agent is gone, so its slot
