@@ -504,10 +504,12 @@ where
     // -- captain conference -------------------------------------------------
 
     /// Pre-launch phase (no active mission): open or continue the
-    /// conference. Mid-mission conference (Task 7) rejects for now.
+    /// conference. Mid-mission (a running mission with no conference open
+    /// yet, e.g. a resumed mission): open a fresh conference, hydrating its
+    /// session or falling back to a recap (Task 7 adds the amendment arm).
     async fn say_to_captain(&mut self, text: String) {
-        if self.mission.is_some() {
-            tracing::warn!("mid-mission conference lands in a later task");
+        if self.mission.is_some() && self.conference.is_none() {
+            self.open_mid_mission_conference(text).await;
             return;
         }
         if self.conference.is_none() {
@@ -575,6 +577,65 @@ where
         } else {
             self.start_captain_turn(text);
         }
+    }
+
+    /// Open a Captain conference for a mission that is already running (no
+    /// pre-launch conference exists, e.g. a resumed mission). Hydrates the
+    /// Captain's session if one survives for this repo root; otherwise
+    /// prefixes the first turn with a recap of the objective and current
+    /// workstream statuses so the Captain has full context.
+    async fn open_mid_mission_conference(&mut self, first_text: String) {
+        let Some(m) = self.mission.as_ref() else {
+            return;
+        };
+        let mission_id = m.plan.mission_id;
+        let captain_ws = m.captain_ws;
+        let slug = m.plan.slug.clone();
+        let objective = m.plan.objective.clone();
+        let root = self.shared.deps.repo_root();
+        let session = match self.shared.deps.session_for(captain_ws, Station::Captain) {
+            Ok(Some((sid, cwd))) if cwd == root => Some(sid),
+            _ => None,
+        };
+        let recap = if session.is_none() {
+            let statuses: Vec<(String, String)> = m
+                .plan
+                .workstreams
+                .iter()
+                .map(|w| {
+                    let s =
+                        m.ws.get(&w.id)
+                            .map(|ws| format!("{:?}", ws.status))
+                            .unwrap_or_else(|| "Unknown".into());
+                    (w.slug.clone(), s)
+                })
+                .collect();
+            Some(prompts::captain_recap(&objective, &m.plan, &statuses))
+        } else {
+            None
+        };
+        self.conference = Some(Conference {
+            mission_id,
+            slug,
+            objective,
+            session,
+            revision: 0,
+            latest_proposal: None,
+            turn_in_flight: None,
+            queued: VecDeque::new(),
+            turns_used: 0,
+            auto_retries: 0,
+            approved: false,
+        });
+        self.shared.emit(BridgeEvent::UserSaid {
+            mission: mission_id,
+            text: first_text.clone(),
+        });
+        let message = match recap {
+            Some(r) => format!("{r}\n\n## Your officer says\n{first_text}"),
+            None => first_text,
+        };
+        self.start_captain_turn(message);
     }
 
     /// Mirrors the old `start_mission` invocation body: same profile, tools
@@ -713,18 +774,22 @@ where
             text: reply.message.clone(),
         });
 
-        if let Some(draft) = reply.proposed_plan {
-            if self.conference.as_ref().is_some_and(|c| c.approved) {
-                tracing::info!("proposal discarded: approval already locked");
-                // One-shot: the lock existed only to discard THIS in-flight
-                // turn's proposal. Clear it now so the conference (queue
-                // flush below, future mid-mission turns) is usable again.
-                if let Some(conf) = self.conference.as_mut() {
-                    conf.approved = false;
-                }
-            } else {
-                self.handle_proposal(draft).await; // pre-launch validation below
+        // One-shot: the lock exists only to discard the proposal of THIS
+        // in-flight turn. Clear it here regardless of whether a proposal
+        // actually arrived - a reply that came back conversational-only
+        // must not leave the lock wedged shut (it would otherwise queue
+        // every future turn, including the very mid-mission conference
+        // this lock was protecting, forever).
+        let was_locked = self.conference.as_ref().is_some_and(|c| c.approved);
+        if was_locked {
+            if let Some(conf) = self.conference.as_mut() {
+                conf.approved = false;
             }
+            if reply.proposed_plan.is_some() {
+                tracing::info!("proposal discarded: approval already locked");
+            }
+        } else if let Some(draft) = reply.proposed_plan {
+            self.handle_proposal(draft).await; // pre-launch validation below
         }
 
         // Flush queued user messages as one concatenated turn.

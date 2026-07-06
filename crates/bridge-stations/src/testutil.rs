@@ -144,6 +144,10 @@ pub struct MockDeps {
     pub recorded_reports: Mutex<Vec<(BattleReport, Vec<PathBuf>)>>,
     pub findings: Mutex<Vec<Finding>>,
     pub findings_queries: Mutex<Vec<Vec<PathBuf>>>,
+    /// Scripted `session_for` answers, consulted before the recorded
+    /// `record_session` calls; lets tests plant a persisted session without
+    /// having to run a whole prior turn through the controller.
+    pub sessions_script: Mutex<HashMap<(WorkstreamId, Station), (SessionId, PathBuf)>>,
 }
 
 impl MockDeps {
@@ -175,6 +179,7 @@ impl MockDeps {
             recorded_reports: Mutex::new(Vec::new()),
             findings: Mutex::new(Vec::new()),
             findings_queries: Mutex::new(Vec::new()),
+            sessions_script: Mutex::new(HashMap::new()),
         })
     }
 
@@ -563,6 +568,9 @@ impl ComputerPort for MockDeps {
         ws: WorkstreamId,
         station: Station,
     ) -> Result<Option<(SessionId, PathBuf)>, ComputerError> {
+        if let Some(scripted) = self.sessions_script.lock().unwrap().get(&(ws, station)) {
+            return Ok(Some(scripted.clone()));
+        }
         Ok(self
             .recorded_sessions
             .lock()
