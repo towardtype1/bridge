@@ -4,6 +4,7 @@
 //! owned by the app crate. This module stays runtime-agnostic.
 
 use crate::ids::{EscalationId, MissionId, OrderId, SessionId, Station, WorkstreamId};
+use crate::plan::{PlanDiff, PlanDraft};
 use crate::report::BattleReport;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,29 @@ pub enum BridgeEvent {
     WorkstreamProvisioned {
         id: WorkstreamId,
         worktree_path: PathBuf,
+    },
+    /// User message accepted into the Captain conference (canonical echo).
+    UserSaid {
+        mission: MissionId,
+        text: String,
+    },
+    /// One completed Captain conference turn's message.
+    CaptainSays {
+        mission: MissionId,
+        text: String,
+    },
+    /// A versioned plan proposal; `diff` is present for amendments.
+    PlanProposed {
+        mission: MissionId,
+        revision: u64,
+        plan: PlanDraft,
+        diff: Option<PlanDiff>,
+    },
+    /// Stale approval, validation failure, or conference cap reached.
+    ProposalRejected {
+        mission: MissionId,
+        revision: u64,
+        reason: String,
     },
 }
 
@@ -150,6 +174,8 @@ pub enum WorkstreamStatus {
     },
     /// Still breached after max Kobayashi rounds; merge needs user override.
     Flagged,
+    /// Removed from the plan by an approved amendment before it started.
+    Cancelled,
 }
 
 /// Outcome of one claude invocation, as recorded in the Ship's Computer.

@@ -32,6 +32,10 @@ pub enum BridgeCommand {
     /// it lagged the event bus, so a dropped `EscalationRequested` /
     /// `MergeConfirmationRequested` cannot silently strand the mission.
     ResyncActionable,
+    /// Send a message into the Captain conference.
+    SayToCaptain { text: String },
+    /// Approve the latest plan proposal at the given revision.
+    ApproveProposal { revision: u64 },
 }
 
 /// Additional headroom granted to a paused mission. Zero fields leave the

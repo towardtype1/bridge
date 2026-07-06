@@ -3,8 +3,8 @@
 
 use bridge_core::{
     BattleReport, BridgeEvent, BudgetSnapshot, EscalationId, EscalationTicket, HookDecisionRecord,
-    LogEntry, MergeProposal, MergeQueueEntry, MissionState, PauseReason, RateLimitState,
-    TurnRecord, WorkstreamId, WorkstreamStatus,
+    LogEntry, MergeProposal, MergeQueueEntry, MissionState, PauseReason, PlanDiff, PlanDraft,
+    RateLimitState, TurnRecord, WorkstreamId, WorkstreamStatus,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -28,8 +28,27 @@ pub struct AppState {
     pub rate_limit: Option<RateLimitState>,
     pub compat_warning: Option<(String, String, String)>,
     pub battle_reports: Vec<BattleReport>,
+    /// Transcript of the Captain conference: who said what, oldest first.
+    pub captain_feed: Vec<(CaptainSpeaker, String)>,
+    /// The most recent plan proposal awaiting approval, if any.
+    pub latest_proposal: Option<ProposalCard>,
     /// Ephemeral widget state (text buffers, selection). Not event-driven.
     pub ui: UiInputs,
+}
+
+/// Who authored a line in the Captain conference transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptainSpeaker {
+    You,
+    Captain,
+}
+
+/// A pending plan proposal, shown to the user for approval.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProposalCard {
+    pub revision: u64,
+    pub plan: PlanDraft,
+    pub diff: Option<PlanDiff>,
 }
 
 /// Text buffers and selection owned by the GUI between frames.
@@ -73,13 +92,18 @@ impl AppState {
         match event {
             BridgeEvent::Log(entry) => push_bounded(&mut self.logs, entry),
             BridgeEvent::MissionStatus(update) => {
+                if update.state == MissionState::Executing {
+                    self.latest_proposal = None;
+                }
                 self.mission_state = Some(update.state);
                 self.mission_detail = update.detail;
             }
             BridgeEvent::WorkstreamStatus { id, status } => {
                 if matches!(
                     status,
-                    WorkstreamStatus::Merged | WorkstreamStatus::Failed { .. }
+                    WorkstreamStatus::Merged
+                        | WorkstreamStatus::Failed { .. }
+                        | WorkstreamStatus::Cancelled
                 ) {
                     self.pending_merges.retain(|p| p.workstream != id);
                 }
@@ -138,6 +162,37 @@ impl AppState {
             } => self.compat_warning = Some((detected, tested_min, tested_max)),
             BridgeEvent::WorkstreamProvisioned { id, worktree_path } => {
                 self.panel_mut(id).worktree_path = Some(worktree_path);
+            }
+            BridgeEvent::UserSaid { mission: _, text } => {
+                push_bounded(&mut self.captain_feed, (CaptainSpeaker::You, text));
+            }
+            BridgeEvent::CaptainSays { mission: _, text } => {
+                push_bounded(&mut self.captain_feed, (CaptainSpeaker::Captain, text));
+            }
+            BridgeEvent::PlanProposed {
+                mission: _,
+                revision,
+                plan,
+                diff,
+            } => {
+                self.latest_proposal = Some(ProposalCard {
+                    revision,
+                    plan,
+                    diff,
+                });
+            }
+            BridgeEvent::ProposalRejected {
+                mission: _,
+                revision: _,
+                reason,
+            } => {
+                push_bounded(
+                    &mut self.captain_feed,
+                    (
+                        CaptainSpeaker::Captain,
+                        format!("Proposal rejected: {reason}"),
+                    ),
+                );
             }
         }
     }
@@ -209,6 +264,7 @@ pub fn status_label(status: &WorkstreamStatus) -> String {
         WorkstreamStatus::Merged => "Merged".to_owned(),
         WorkstreamStatus::Failed { .. } => "Failed".to_owned(),
         WorkstreamStatus::Flagged => "Flagged".to_owned(),
+        WorkstreamStatus::Cancelled => "Cancelled".to_owned(),
     }
 }
 
@@ -257,8 +313,9 @@ mod tests {
     use bridge_core::{
         BridgeEvent, BudgetSnapshot, DecisionKind, DecisionSource, EscalationId, EscalationTicket,
         HookDecisionRecord, LogEntry, LogLevel, MergeProposal, MergeQueueEntry, MergeQueueState,
-        MissionId, MissionState, MissionStatusUpdate, OrderId, PauseReason, RateLimitState,
-        Station, TurnRecord, UserDecision, Verdict, WorkstreamId, WorkstreamStatus,
+        MissionId, MissionState, MissionStatusUpdate, OrderId, PauseReason, PlanDraft,
+        PlanDraftWorkstream, RateLimitState, Station, TurnRecord, UserDecision, Verdict,
+        WorkstreamId, WorkstreamStatus,
     };
     use chrono::{Duration, TimeZone, Utc};
 
@@ -750,5 +807,69 @@ mod tests {
             }),
             "Failed - engine down"
         );
+    }
+
+    #[test]
+    fn captain_conversation_events_feed_transcript_and_proposal() {
+        let mut s = AppState::default();
+        let mission = MissionId::new();
+        s.apply(BridgeEvent::UserSaid {
+            mission,
+            text: "build X".into(),
+        });
+        s.apply(BridgeEvent::CaptainSays {
+            mission,
+            text: "Aye.".into(),
+        });
+        assert_eq!(
+            s.captain_feed,
+            vec![
+                (CaptainSpeaker::You, "build X".to_string()),
+                (CaptainSpeaker::Captain, "Aye.".to_string()),
+            ]
+        );
+        let plan = PlanDraft {
+            workstreams: vec![PlanDraftWorkstream {
+                slug: "a".into(),
+                title: "A".into(),
+                description: "d".into(),
+                depends_on: vec![],
+            }],
+        };
+        s.apply(BridgeEvent::PlanProposed {
+            mission,
+            revision: 1,
+            plan: plan.clone(),
+            diff: None,
+        });
+        assert_eq!(s.latest_proposal.as_ref().unwrap().revision, 1);
+        s.apply(BridgeEvent::ProposalRejected {
+            mission,
+            revision: 1,
+            reason: "stale".into(),
+        });
+        assert!(matches!(
+            s.captain_feed.last().unwrap().0,
+            CaptainSpeaker::Captain
+        ));
+        // Launch clears the card.
+        s.apply(BridgeEvent::MissionStatus(MissionStatusUpdate {
+            mission,
+            state: MissionState::Executing,
+            detail: None,
+        }));
+        assert!(s.latest_proposal.is_none());
+    }
+
+    #[test]
+    fn cancelled_is_terminal_for_pending_merges() {
+        let mut s = AppState::default();
+        let ws = WorkstreamId::new();
+        s.apply(BridgeEvent::WorkstreamStatus {
+            id: ws,
+            status: WorkstreamStatus::Cancelled,
+        });
+        assert_eq!(s.workstreams[&ws].status, Some(WorkstreamStatus::Cancelled));
+        assert_eq!(status_label(&WorkstreamStatus::Cancelled), "Cancelled");
     }
 }

@@ -433,6 +433,9 @@ where
                 self.exit = Some(Ok(()));
             }
             BridgeCommand::ResyncActionable => self.resync_actionable(),
+            BridgeCommand::SayToCaptain { .. } | BridgeCommand::ApproveProposal { .. } => {
+                tracing::warn!("conversational captain not wired yet (Task 4)");
+            }
         }
     }
 
