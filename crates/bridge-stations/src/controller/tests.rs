@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::testutil::{GitCall, MockDeps, TurnResponse};
-use bridge_core::{BattleReport, Verdict};
+use bridge_core::{BattleReport, PlanDraftWorkstream, Verdict};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Barrier;
 
@@ -1063,6 +1063,89 @@ async fn resumed_plan_skips_captain_and_starts_working() {
 }
 
 // ---------------------------------------------------------------------------
+// mid-mission conference opening on a resumed mission
+
+fn small_plan() -> MissionPlan {
+    MissionPlan::from_draft(
+        PlanDraft {
+            workstreams: vec![PlanDraftWorkstream {
+                slug: "solo".into(),
+                title: "Solo".into(),
+                description: "d".into(),
+                depends_on: vec![],
+            }],
+        },
+        MissionId::new(),
+        "m",
+        "obj",
+        "main",
+    )
+    .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn resumed_mission_conference_recaps_when_no_session_survives() {
+    let deps = MockDeps::new();
+    let plan = small_plan();
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "status?".into(),
+    })
+    .await;
+    rig.wait_for("captain answers", |e| {
+        matches!(e, BridgeEvent::CaptainSays { .. })
+    })
+    .await;
+    let captain: Vec<_> = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .collect();
+    assert_eq!(captain.len(), 1);
+    assert_eq!(captain[0].inv.resume, None, "no persisted session -> fresh");
+    assert!(
+        captain[0].inv.prompt.contains("solo"),
+        "recap names the workstream"
+    );
+    assert!(
+        captain[0].inv.prompt.contains("status?"),
+        "user text appended"
+    );
+    rig.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn resumed_mission_conference_resumes_persisted_session() {
+    let deps = MockDeps::new();
+    let plan = small_plan();
+    let captain_ws = WorkstreamId(plan.mission_id.0);
+    deps.sessions_script.lock().unwrap().insert(
+        (captain_ws, Station::Captain),
+        (SessionId::from("old-session"), deps.repo_root()),
+    );
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), Some(plan));
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "status?".into(),
+    })
+    .await;
+    rig.wait_for("captain answers", |e| {
+        matches!(e, BridgeEvent::CaptainSays { .. })
+    })
+    .await;
+    let captain: Vec<_> = deps
+        .turn_log()
+        .into_iter()
+        .filter(|t| t.station == Station::Captain)
+        .collect();
+    assert_eq!(captain[0].inv.resume, Some(SessionId::from("old-session")));
+    assert!(
+        !captain[0].inv.prompt.contains("## Objective"),
+        "no recap when resuming"
+    );
+    rig.shutdown().await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // battle report events
 
 #[tokio::test(start_paused = true)]
@@ -1261,6 +1344,81 @@ async fn in_flight_turn_proposal_discarded_after_approval() {
     rig.shutdown().await.unwrap();
 }
 
+/// Carry-forward fix: `captain_done`'s approved-reset must clear the lock
+/// even when the flagged in-flight turn's reply is CONVERSATIONAL (no
+/// proposed_plan) - the discard branch never runs, so only the hoisted
+/// reset can unwedge it. Prove the lock actually cleared by driving the
+/// (now mid-mission) conference with another SayToCaptain: a wedged lock
+/// would queue it forever instead of dispatching a turn.
+#[tokio::test(start_paused = true)]
+async fn in_flight_conversational_reply_clears_approval_lock() {
+    let deps = MockDeps::new();
+    deps.set_plan(&[("keep", &[])]);
+    let mut rig = spawn_rig(deps.clone(), BridgeConfig::default(), None);
+    rig.send(BridgeCommand::SayToCaptain { text: "go".into() })
+        .await;
+    rig.wait_for("rev 1", |e| {
+        matches!(e, BridgeEvent::PlanProposed { revision: 1, .. })
+    })
+    .await;
+
+    // Hold the next captain turn open at a barrier while we approve rev 1.
+    let barrier = Arc::new(Barrier::new(2));
+    *deps.captain_barrier.lock().unwrap() = Some(barrier.clone());
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Just thinking out loud, no plan yet."
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "one more tweak".into(),
+    })
+    .await;
+    rig.send(BridgeCommand::ApproveProposal { revision: 1 })
+        .await;
+    rig.wait_for("executing", |e| {
+        matches!(
+            e,
+            BridgeEvent::MissionStatus(MissionStatusUpdate {
+                state: MissionState::Executing,
+                ..
+            })
+        )
+    })
+    .await;
+
+    // Release the held turn: its message-only reply carries no proposal, so
+    // the OLD discard branch (gated on `if let Some(draft) = ...`) never
+    // ran at all, and the lock would stay set forever without the hoist.
+    barrier.wait().await;
+    *deps.captain_barrier.lock().unwrap() = None;
+    rig.wait_for(
+        "conversational reply surfaced",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("no plan yet")),
+    )
+    .await;
+
+    // Drive the now-mid-mission conference with another message. A wedged
+    // lock would leave this queued forever instead of dispatching a turn.
+    deps.push_turn(
+        Station::Captain,
+        TurnResponse::structured(serde_json::json!({
+            "message": "Still on track."
+        })),
+    );
+    rig.send(BridgeCommand::SayToCaptain {
+        text: "status check".into(),
+    })
+    .await;
+    rig.wait_for(
+        "mid-mission reply",
+        |e| matches!(e, BridgeEvent::CaptainSays { text, .. } if text.contains("Still on track")),
+    )
+    .await;
+    rig.shutdown().await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn stale_approval_rejected_and_does_not_launch() {
     let deps = MockDeps::new();
@@ -1288,6 +1446,11 @@ async fn stale_approval_rejected_and_does_not_launch() {
         matches!(e, BridgeEvent::ProposalRejected { revision: 1, .. })
     })
     .await;
+    assert_eq!(
+        deps.recorded_missions.lock().unwrap().len(),
+        1,
+        "only the placeholder is recorded - nothing launched"
+    );
     assert!(
         deps.recorded_missions.lock().unwrap()[0]
             .workstreams
