@@ -54,8 +54,6 @@ use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Error)]
 pub enum MissionError {
-    #[error("planning failed: {0}")]
-    Planning(String),
     #[error("command channel closed")]
     ChannelClosed,
     #[error("{0}")]
@@ -128,7 +126,7 @@ where
             exit: None,
         };
         if let Some(plan) = self.resumed_plan {
-            ctl.begin_mission(plan, None).await;
+            ctl.begin_mission(plan).await;
         }
         ctl.event_loop().await
     }
@@ -947,7 +945,7 @@ where
                     if let Some(c) = self.conference.as_mut() {
                         c.latest_proposal = None;
                     }
-                    self.begin_mission(plan, None).await;
+                    self.begin_mission(plan).await;
                 }
                 Err(e) => {
                     self.shared.emit(BridgeEvent::ProposalRejected {
@@ -1130,7 +1128,14 @@ where
         }
         if let Some(c) = self.conference.as_mut() {
             c.latest_proposal = None;
-            c.approved = false;
+            // Mirror the launch arm: only clear the approval lock when no
+            // turn is in flight. An in-flight turn's late proposal is
+            // discarded by captain_done's own hoisted reset once that turn
+            // resolves; clearing it here too early would let the late
+            // proposal fall through to handle_proposal instead.
+            if c.turn_in_flight.is_none() {
+                c.approved = false;
+            }
         }
         self.start_eligible().await;
         // Positive signal that the amendment actually applied: without this
@@ -1149,13 +1154,8 @@ where
             }));
     }
 
-    /// Install the plan as the running mission; `captain_turn` carries the
-    /// planning turn to account when the plan came from a live Captain.
-    async fn begin_mission(
-        &mut self,
-        plan: MissionPlan,
-        captain_turn: Option<(OrderId, DateTime<Utc>, TurnOutcome)>,
-    ) {
+    /// Install the plan as the running mission.
+    async fn begin_mission(&mut self, plan: MissionPlan) {
         let order = plan
             .topo_order()
             .unwrap_or_else(|_| plan.workstreams.iter().map(|w| w.id).collect());
@@ -1209,9 +1209,6 @@ where
         };
         let mission_id = mission.plan.mission_id;
         self.mission = Some(mission);
-        if let Some((order_id, started_at, outcome)) = captain_turn {
-            self.record_turn_outcome(captain_ws, Station::Captain, order_id, started_at, &outcome);
-        }
         self.shared
             .emit(BridgeEvent::MissionStatus(MissionStatusUpdate {
                 mission: mission_id,
