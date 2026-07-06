@@ -77,3 +77,8 @@ keep_on_failure = true
 # they match expected sync events, deletes always escalate.
 # [linear]
 # mcp_config_path = "/path/to/linear-mcp.json"
+
+[ui]
+# Command used by the "Open in VS Code" button to open a worktree.
+# e.g. "code", "cursor". Must be on PATH.
+editor_command = "code"

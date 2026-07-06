@@ -213,29 +213,29 @@ fn push_bounded<T>(buf: &mut Vec<T>, item: T) {
 /// Short badge text for a workstream status.
 pub fn status_label(status: &WorkstreamStatus) -> String {
     match status {
-        WorkstreamStatus::Pending => "PENDING".to_owned(),
-        WorkstreamStatus::Working => "WORKING".to_owned(),
-        WorkstreamStatus::UnderTest { round } => format!("KOBAYASHI R{round}"),
-        WorkstreamStatus::Breached { round } => format!("BREACHED R{round}"),
-        WorkstreamStatus::ReadyToMerge => "READY".to_owned(),
-        WorkstreamStatus::Rebasing => "REBASING".to_owned(),
-        WorkstreamStatus::ConflictFix => "CONFLICT FIX".to_owned(),
-        WorkstreamStatus::InMergeQueue => "IN QUEUE".to_owned(),
-        WorkstreamStatus::Merged => "MERGED".to_owned(),
-        WorkstreamStatus::Failed { .. } => "FAILED".to_owned(),
-        WorkstreamStatus::Flagged => "FLAGGED".to_owned(),
+        WorkstreamStatus::Pending => "Pending".to_owned(),
+        WorkstreamStatus::Working => "Working".to_owned(),
+        WorkstreamStatus::UnderTest { round } => format!("Under test - round {round}"),
+        WorkstreamStatus::Breached { round } => format!("Breached - round {round}"),
+        WorkstreamStatus::ReadyToMerge => "Ready".to_owned(),
+        WorkstreamStatus::Rebasing => "Rebasing".to_owned(),
+        WorkstreamStatus::ConflictFix => "Conflict fix".to_owned(),
+        WorkstreamStatus::InMergeQueue => "In queue".to_owned(),
+        WorkstreamStatus::Merged => "Merged".to_owned(),
+        WorkstreamStatus::Failed { .. } => "Failed".to_owned(),
+        WorkstreamStatus::Flagged => "Flagged".to_owned(),
     }
 }
 
 /// Header chip text for the mission state.
 pub fn mission_state_label(state: &MissionState) -> String {
     match state {
-        MissionState::Planning => "PLANNING".to_owned(),
-        MissionState::Executing => "EXECUTING".to_owned(),
-        MissionState::Paused { reason } => format!("PAUSED - {}", pause_reason_text(reason)),
-        MissionState::WindingDown => "WINDING DOWN".to_owned(),
-        MissionState::Complete => "COMPLETE".to_owned(),
-        MissionState::Failed { reason } => format!("FAILED - {reason}"),
+        MissionState::Planning => "Planning".to_owned(),
+        MissionState::Executing => "Executing".to_owned(),
+        MissionState::Paused { reason } => format!("Paused - {}", pause_reason_text(reason)),
+        MissionState::WindingDown => "Winding down".to_owned(),
+        MissionState::Complete => "Complete".to_owned(),
+        MissionState::Failed { reason } => format!("Failed - {reason}"),
     }
 }
 
@@ -760,38 +760,38 @@ mod tests {
 
     #[test]
     fn status_labels_are_stable() {
-        assert_eq!(status_label(&WorkstreamStatus::Pending), "PENDING");
+        assert_eq!(status_label(&WorkstreamStatus::Pending), "Pending");
         assert_eq!(
             status_label(&WorkstreamStatus::UnderTest { round: 2 }),
-            "KOBAYASHI R2"
+            "Under test - round 2"
         );
         assert_eq!(
             status_label(&WorkstreamStatus::Breached { round: 3 }),
-            "BREACHED R3"
+            "Breached - round 3"
         );
-        assert_eq!(status_label(&WorkstreamStatus::Flagged), "FLAGGED");
+        assert_eq!(status_label(&WorkstreamStatus::Flagged), "Flagged");
         assert_eq!(
             status_label(&WorkstreamStatus::Failed { reason: "x".into() }),
-            "FAILED"
+            "Failed"
         );
     }
 
     #[test]
     fn mission_state_labels() {
-        assert_eq!(mission_state_label(&MissionState::Planning), "PLANNING");
+        assert_eq!(mission_state_label(&MissionState::Planning), "Planning");
         assert_eq!(
             mission_state_label(&MissionState::Paused {
                 reason: PauseReason::BudgetExhausted {
                     which: "max_total_turns".into()
                 }
             }),
-            "PAUSED - budget exhausted (max_total_turns)"
+            "Paused - budget exhausted (max_total_turns)"
         );
         assert_eq!(
             mission_state_label(&MissionState::Failed {
                 reason: "engine down".into()
             }),
-            "FAILED - engine down"
+            "Failed - engine down"
         );
     }
 }

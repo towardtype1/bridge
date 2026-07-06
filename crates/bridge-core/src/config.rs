@@ -33,6 +33,8 @@ pub struct BridgeConfig {
     pub worktrees: WorktreeConfig,
     /// Linear MCP sync. Absent = disabled.
     pub linear: Option<LinearConfig>,
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 impl BridgeConfig {
@@ -224,6 +226,22 @@ pub struct LinearConfig {
     pub mcp_config_path: PathBuf,
 }
 
+/// GUI preferences.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    /// Command used to open a worktree in an editor, e.g. "code", "cursor".
+    pub editor_command: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            editor_command: "code".into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +295,14 @@ mod tests {
     fn load_missing_file_is_io_error() {
         let err = BridgeConfig::load(Path::new("/nonexistent/bridge.toml")).unwrap_err();
         assert!(matches!(err, ConfigError::Io { .. }));
+    }
+
+    #[test]
+    fn ui_editor_command_defaults_to_code() {
+        let cfg = BridgeConfig::default();
+        assert_eq!(cfg.ui.editor_command, "code");
+        let parsed: BridgeConfig =
+            toml::from_str("[ui]\neditor_command = \"cursor\"\n").unwrap();
+        assert_eq!(parsed.ui.editor_command, "cursor");
     }
 }
