@@ -16,8 +16,8 @@ pub mod wire;
 
 pub use commands::{BridgeCommand, BudgetExtension};
 pub use config::{
-    BridgeConfig, BudgetConfig, ClaudeConfig, ConfigError, DeckPalette, LinearConfig, MergeConfig,
-    MergeMode, TacticalConfig, UiConfig, WorktreeConfig,
+    BridgeConfig, BudgetConfig, CaptainConfig, ClaudeConfig, ConfigError, DeckPalette,
+    LinearConfig, MergeConfig, MergeMode, TacticalConfig, UiConfig, WorktreeConfig,
 };
 pub use events::{
     BridgeEvent, BudgetSnapshot, DecisionKind, DecisionSource, EscalationTicket,
@@ -27,5 +27,7 @@ pub use events::{
 };
 pub use ids::{EscalationId, MissionId, OrderId, SessionId, Station, WorkstreamId};
 pub use orders::Order;
-pub use plan::{MissionPlan, PlanDraft, PlanDraftWorkstream, PlanError, WorkstreamSpec};
+pub use plan::{
+    CaptainReply, MissionPlan, PlanDiff, PlanDraft, PlanDraftWorkstream, PlanError, WorkstreamSpec,
+};
 pub use report::{BattleReport, Finding, Severity, Verdict};

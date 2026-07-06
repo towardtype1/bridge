@@ -86,3 +86,7 @@ editor_command = "code"
 deck_palette = "federation"
 # true places agents instantly and disables ambient animation.
 reduce_motion = false
+
+[captain]
+# Total Captain conversation turns per mission (planning + mid-mission).
+max_conference_turns = 24
