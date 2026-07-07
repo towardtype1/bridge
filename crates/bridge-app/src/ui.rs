@@ -83,6 +83,13 @@ fn draw_in(
     out: &mut Vec<BridgeCommand>,
 ) {
     let ctx = ui.ctx().clone();
+    // Preempt before `center()` (which renders `captain_dialogue`), not
+    // after: doing it here means a newly-arrived hail is reflected in
+    // `state.ui.open_captain` before the Captain dialogue gets a chance to
+    // render this frame at all, rather than rendering it and then
+    // immediately overdrawing it with the hail a few calls later - the same
+    // frame otherwise double-renders for one frame.
+    hail_preempts_captain(state);
     paused_banner(ui, t, state, out);
     compat_banner(ui, t, state);
     center(ui, t, state, deck, textures, ui_cfg, out);
@@ -666,30 +673,17 @@ fn workstream_body(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for line in &panel.tool_calls {
-                ui.label(
-                    RichText::new(line)
-                        .color(t.info)
-                        .size(12.0)
-                        .monospace()
-                        .font(theme::crt(17.0)),
-                );
+                ui.label(RichText::new(line).color(t.info).font(theme::crt(17.0)));
             }
             for (station, text) in &panel.output {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(station.to_string())
                             .color(t.text_2)
-                            .size(12.5)
-                            .monospace()
                             .font(theme::crt(17.0)),
                     );
                     ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(text)
-                            .color(t.text)
-                            .size(13.5)
-                            .font(theme::crt(17.0)),
-                    );
+                    ui.label(RichText::new(text).color(t.text).font(theme::crt(17.0)));
                 });
             }
         });
@@ -946,10 +940,8 @@ fn captain_dialogue(
     // The typewriter body: the last Captain line, restarted by
     // `sync_captain_tw` whenever a genuinely new one arrives; a static,
     // already-`complete()`d placeholder before the first `CaptainSays`.
-    // `tw_source_idx` records which `captain_feed` entry `tw` is revealing,
-    // so the scrollback below can skip it (it's shown live, not "earlier").
     let cached = state.sync_captain_tw(now);
-    let tw_source_idx = cached.map(|c| c.feed_len - 1);
+    let has_captain_line = cached.is_some();
     let tw: dialogue::Typewriter = match cached {
         Some(cached) => cached.tw.clone(),
         None => {
@@ -958,6 +950,21 @@ fn captain_dialogue(
             placeholder
         }
     };
+    // `tw_source_idx` identifies which `captain_feed` entry `tw` is
+    // revealing, so the scrollback below can skip it (it's shown live, not
+    // "earlier"). Found by scanning from the end for the last
+    // Captain-speaker entry, not by a cached index: `captain_feed` is
+    // front-drained once it saturates `MAX_FEED` (see `push_bounded`), so a
+    // stored index can point at a different entry once the feed keeps
+    // growing past that bound - scanning always lands on the true live line.
+    let tw_source_idx = has_captain_line
+        .then(|| {
+            state
+                .captain_feed
+                .iter()
+                .rposition(|(speaker, _)| *speaker == CaptainSpeaker::Captain)
+        })
+        .flatten();
 
     let resp = dialogue::dialogue_box(
         ctx,
@@ -1075,6 +1082,13 @@ fn captain_dialogue(
     if resp.closed {
         state.ui.open_captain = false;
     }
+    // Esc closes the Captain dialogue. Scoped to this function - which only
+    // reaches here when `state.ui.open_captain` was already true (the early
+    // return above) - so it never touches the hail paths: a hail is not
+    // closable by Esc (or at all; see `hail_preempts_captain`'s doc comment).
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.ui.open_captain = false;
+    }
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
@@ -1189,8 +1203,6 @@ fn ships_log(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
                         entry.message
                     ))
                     .color(color)
-                    .size(12.0)
-                    .monospace()
                     .font(theme::crt(17.0)),
                 );
             }
@@ -1227,12 +1239,15 @@ fn spawn_editor(editor_command: &str, path: &std::path::Path) {
 /// (Tactical) takes priority over a merge proposal (Helm), matching the
 /// call order the modals they replace used to render in. Hails auto-open
 /// from pending state - no button, no `open_*` flag - and have no close
-/// button in practice: `dialogue_box` always renders its corner CLOSE (it's
-/// shared chrome with the Captain conference, which does close), but
-/// neither `escalation_hail` nor `merge_hail` reads `resp.closed`, so
-/// clicking it is a no-op here. A hail demands an answer; the fail-closed
-/// timeout that auto-denies an expired escalation still runs
-/// controller-side regardless of what's on screen.
+/// button: `escalation_hail` and `merge_hail` both call `dialogue_box` with
+/// `closable: false`, so the shared chrome's corner CLOSE button (rendered
+/// for the Captain conference, which passes `closable: true`) doesn't
+/// render at all for a hail - there's nothing to click, let alone a no-op.
+/// A hail demands an answer; the fail-closed timeout that auto-denies an
+/// expired escalation still runs controller-side regardless of what's on
+/// screen. Called from the top of `draw_in`, before `center()` renders the
+/// Captain dialogue, so a newly-arrived hail preempts it before it ever
+/// gets a frame to draw - not after, which would double-render for a frame.
 fn hail_preempts_captain(state: &mut AppState) {
     if state.active_hail().is_some() {
         // A hail demands an answer and preempts the Captain conference.
@@ -1250,7 +1265,6 @@ fn hail_dialogue(
     out: &mut Vec<BridgeCommand>,
 ) {
     let now = ctx.input(|i| i.time);
-    hail_preempts_captain(state);
     match state.active_hail() {
         Some(Hail::Escalation(ticket)) => {
             let ticket = ticket.clone();
@@ -1394,7 +1408,18 @@ fn merge_hail(
         proposal.target,
         proposal.summary
     );
-    let key = proposal.workstream.to_string();
+    // Includes `branch` and a `diff_stat` length so an in-place proposal
+    // update for the same workstream (`MergeConfirmationRequested` replaces
+    // by workstream - see `AppState::apply`) restarts the reveal: keying on
+    // `workstream` alone would leave `sync_hail_tw` holding the stale
+    // pre-update body forever, since it only regenerates the `Typewriter`
+    // when the key itself changes.
+    let key = format!(
+        "{}:{}:{}",
+        proposal.workstream,
+        proposal.branch,
+        proposal.diff_stat.len()
+    );
     let tw = state.sync_hail_tw(&key, body, now).tw.clone();
     let reduce_motion = ui_cfg.reduce_motion;
 
@@ -1509,5 +1534,83 @@ mod tests {
             state.ui.open_captain,
             "Captain dialogue should stay open when no hail"
         );
+    }
+
+    #[test]
+    fn escape_closes_captain_dialogue() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let t = theme::tokens();
+        let mut state = AppState::default();
+        state.ui.open_captain = true;
+        let mut textures = crate::DialogueTextures::default();
+        let ui_cfg = bridge_core::UiConfig::default();
+        let mut out = Vec::new();
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+
+        let raw_input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw_input, |ui| {
+            let ctx = ui.ctx().clone();
+            captain_dialogue(&ctx, &t, &mut state, &mut textures, rect, &ui_cfg, &mut out);
+        });
+        assert!(
+            !state.ui.open_captain,
+            "Esc should close the Captain dialogue"
+        );
+    }
+
+    #[test]
+    fn escape_does_not_close_a_hail() {
+        // Esc handling lives inside `captain_dialogue`, gated by its own
+        // `open_captain` early return, so it structurally cannot reach the
+        // hail paths - this pins that: a hail dialogue's `active_hail`
+        // stays populated across an Esc press, since nothing in
+        // `captain_dialogue` or `hail_dialogue` ever reads the Escape key
+        // for hails.
+        use bridge_core::{EscalationId, EscalationTicket};
+        use chrono::{Duration, Utc};
+
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let t = theme::tokens();
+        let mut state = AppState::default();
+        state.escalations.push(EscalationTicket {
+            id: EscalationId::new(),
+            workstream: bridge_core::WorkstreamId::new(),
+            question: "allow push?".into(),
+            tool_name: Some("Bash".into()),
+            tool_input_summary: "git push".into(),
+            requested_at: Utc::now(),
+            expires_at: Utc::now() + Duration::seconds(540),
+        });
+        let mut textures = crate::DialogueTextures::default();
+        let ui_cfg = bridge_core::UiConfig::default();
+        let mut out = Vec::new();
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
+
+        let raw_input = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw_input, |ui| {
+            let ctx = ui.ctx().clone();
+            hail_dialogue(&ctx, &t, &mut state, &mut textures, rect, &ui_cfg, &mut out);
+        });
+        assert!(state.active_hail().is_some(), "Esc must not dismiss a hail");
     }
 }

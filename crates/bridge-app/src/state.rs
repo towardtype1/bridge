@@ -30,6 +30,13 @@ pub struct AppState {
     pub battle_reports: Vec<BattleReport>,
     /// Transcript of the Captain conference: who said what, oldest first.
     pub captain_feed: Vec<(CaptainSpeaker, String)>,
+    /// Monotonic count of Captain-speaker lines ever pushed to
+    /// `captain_feed` (never reset, never bounded by `MAX_FEED`). Used as
+    /// the identity token for `CaptainTw` instead of a feed index: once
+    /// `captain_feed` saturates `MAX_FEED`, `push_bounded` front-drains, so
+    /// every new Captain line still lands at the same trailing index and an
+    /// index-derived marker would stop changing - see `sync_captain_tw`.
+    pub captain_lines: u64,
     /// The most recent plan proposal awaiting approval, if any.
     pub latest_proposal: Option<ProposalCard>,
     /// Typewriter reveal cache for the Captain dialogue. See
@@ -52,10 +59,12 @@ pub enum Hail<'a> {
     Merge(&'a MergeProposal),
 }
 
-/// Typewriter reveal cache for the active hail dialogue. `key` is the
-/// escalation id or workstream id (rendered as a string) of the hail the
-/// cached `Typewriter` is revealing: a new hail (a different key) restarts
-/// the reveal from `now`.
+/// Typewriter reveal cache for the active hail dialogue. `key` identifies
+/// the hail the cached `Typewriter` is revealing - the escalation id for a
+/// Tactical hail; for a Helm merge hail, the workstream id plus enough of
+/// the proposal's content (branch, diff-stat length) that an in-place
+/// update to the same workstream's proposal also counts as a new hail. A
+/// new hail (a different key) restarts the reveal from `now`.
 ///
 /// Deliberately excludes the escalation countdown: the countdown ticks
 /// every second, and if it were baked into the cached body text, keying on
@@ -78,10 +87,14 @@ pub struct HailTw {
 /// restarts it.
 #[derive(Debug, Clone)]
 pub struct CaptainTw {
-    /// One past the index of the Captain-speaker line this typewriter is
-    /// revealing (`captain_feed[feed_len - 1]`) - an identity token compared
-    /// across calls, not a literal snapshot of `captain_feed.len()`.
-    pub feed_len: usize,
+    /// The value of `AppState::captain_lines` at the moment this typewriter
+    /// captured its text - an identity token compared across calls. Not a
+    /// feed index: `captain_feed` front-drains once it saturates
+    /// `MAX_FEED` (see `push_bounded`), so a stored index would keep
+    /// pointing at the same trailing slot across many distinct Captain
+    /// lines and staleness detection would stop firing. `captain_lines` is
+    /// monotonic and unbounded, so it never collides.
+    pub captain_seq: u64,
     pub tw: crate::dialogue::Typewriter,
 }
 
@@ -231,6 +244,7 @@ impl AppState {
             }
             BridgeEvent::CaptainSays { mission: _, text } => {
                 push_bounded(&mut self.captain_feed, (CaptainSpeaker::Captain, text));
+                self.captain_lines += 1;
             }
             BridgeEvent::PlanProposed {
                 mission: _,
@@ -256,6 +270,7 @@ impl AppState {
                         format!("Proposal rejected: {reason}"),
                     ),
                 );
+                self.captain_lines += 1;
             }
         }
     }
@@ -289,18 +304,18 @@ impl AppState {
     /// Captain has spoken yet - the caller falls back to a static
     /// placeholder line.
     pub fn sync_captain_tw(&mut self, now: f64) -> Option<&CaptainTw> {
-        let (idx, (_, text)) = self
+        let text = self
             .captain_feed
             .iter()
-            .enumerate()
             .rev()
-            .find(|(_, entry)| entry.0 == CaptainSpeaker::Captain)?;
-        let marker = idx + 1;
-        let stale = !matches!(&self.captain_tw, Some(existing) if existing.feed_len == marker);
+            .find(|entry| entry.0 == CaptainSpeaker::Captain)
+            .map(|(_, text)| text.clone())?;
+        let marker = self.captain_lines;
+        let stale = !matches!(&self.captain_tw, Some(existing) if existing.captain_seq == marker);
         if stale {
             self.captain_tw = Some(CaptainTw {
-                feed_len: marker,
-                tw: crate::dialogue::Typewriter::new(text.clone(), now),
+                captain_seq: marker,
+                tw: crate::dialogue::Typewriter::new(text, now),
             });
         }
         self.captain_tw.as_ref()
@@ -1010,6 +1025,49 @@ mod tests {
             tw2.tw.visible(3.0, false),
             "",
             "freshly restarted, nothing revealed yet"
+        );
+    }
+
+    #[test]
+    fn captain_typewriter_tracks_newest_line_past_feed_saturation() {
+        // Saturate `captain_feed` to `MAX_FEED` so `push_bounded` starts
+        // front-draining: every subsequent push still lands at the same
+        // trailing index (`MAX_FEED - 1`). An index-derived cache marker
+        // (the old `feed_len = idx + 1`) is therefore constant (`MAX_FEED`)
+        // across every post-saturation Captain line, and `sync_captain_tw`
+        // would see `existing.feed_len == marker` hold forever after the
+        // first post-saturation sync - freezing the dialogue on that first
+        // line. `captain_lines` is monotonic and unbounded, so it keeps
+        // distinguishing them.
+        let mut s = AppState::default();
+        let mission = MissionId::new();
+        for i in 0..MAX_FEED {
+            s.apply(BridgeEvent::CaptainSays {
+                mission,
+                text: format!("filler {i}"),
+            });
+        }
+        assert_eq!(s.captain_feed.len(), MAX_FEED, "feed is saturated");
+
+        s.apply(BridgeEvent::CaptainSays {
+            mission,
+            text: "Penultimate.".into(),
+        });
+        let tw1 = s.sync_captain_tw(1.0).unwrap();
+        assert_eq!(tw1.tw.visible(0.0, true), "Penultimate.");
+
+        s.apply(BridgeEvent::CaptainSays {
+            mission,
+            text: "Latest.".into(),
+        });
+        let tw2 = s.sync_captain_tw(2.0).unwrap();
+        assert_eq!(
+            tw2.tw.visible(0.0, true),
+            "Latest.",
+            "must reveal the newest Captain line even once captain_feed has \
+             saturated MAX_FEED and is front-draining; against the old \
+             index-based marker this assertion fails (it observes \
+             \"Penultimate.\" instead, frozen from the prior sync)"
         );
     }
 

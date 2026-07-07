@@ -32,7 +32,11 @@ pub fn chip(ui: &mut egui::Ui, t: &Tokens, label: &str, kind: ChipKind) {
         .stroke(egui::Stroke::new(1.0, color))
         .inner_margin(egui::Margin::symmetric(6, 2))
         .show(ui, |ui| {
-            ui.label(RichText::new(label).font(theme::pixel(8.0)).color(color));
+            ui.label(
+                RichText::new(label.to_uppercase())
+                    .font(theme::pixel(8.0))
+                    .color(color),
+            );
         });
 }
 

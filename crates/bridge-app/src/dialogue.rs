@@ -272,8 +272,12 @@ mod tests {
     #[test]
     fn typewriter_is_char_safe_on_multibyte() {
         let tw = Typewriter::new("réplique".into(), 0.0);
-        // must never split a UTF-8 char - walk chars, not bytes
-        let _ = tw.visible(0.008, false); // 1 char
+        // 0.016s * 125 chars/s = 2 chars: "r" and "é" (2 bytes). A
+        // byte-slicing implementation (`&self.text[..n]`) would slice at
+        // byte offset 2, landing mid-"é" (bytes 1..3) and panicking on a
+        // non-UTF-8-boundary index; walking `char_indices` instead lands
+        // exactly on the char boundary after "é".
+        assert_eq!(tw.visible(0.016, false), "ré");
     }
 
     #[test]
