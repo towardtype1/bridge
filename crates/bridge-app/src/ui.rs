@@ -27,6 +27,7 @@
 //! rather than a `Context`. `draw` keeps its context-based signature by
 //! building the root `Ui` itself, exactly as `Context::run_ui` does.
 
+use crate::pixel::{self, ChipKind};
 use crate::state::{
     AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
     status_label,
@@ -158,19 +159,20 @@ fn dot(ui: &mut egui::Ui, color: Color32, pulse: bool) -> egui::Response {
     resp
 }
 
-fn status_color(status: &WorkstreamStatus, t: &Tokens) -> Color32 {
+/// Workstream status -> chip kind for the workstream window's status chip.
+fn status_chip_kind(status: &WorkstreamStatus) -> ChipKind {
     match status {
-        WorkstreamStatus::Pending => t.text_3,
-        WorkstreamStatus::Working
-        | WorkstreamStatus::Rebasing
-        | WorkstreamStatus::ConflictFix
-        | WorkstreamStatus::InMergeQueue => t.accent,
-        WorkstreamStatus::UnderTest { .. } => t.info,
+        WorkstreamStatus::Working => ChipKind::Warn,
+        WorkstreamStatus::Merged | WorkstreamStatus::ReadyToMerge => ChipKind::Good,
         WorkstreamStatus::Breached { .. }
         | WorkstreamStatus::Failed { .. }
-        | WorkstreamStatus::Flagged => t.crit,
-        WorkstreamStatus::ReadyToMerge | WorkstreamStatus::Merged => t.good,
-        WorkstreamStatus::Cancelled => t.text_3,
+        | WorkstreamStatus::Flagged => ChipKind::Crit,
+        WorkstreamStatus::UnderTest { .. } => ChipKind::Info,
+        WorkstreamStatus::Pending
+        | WorkstreamStatus::Rebasing
+        | WorkstreamStatus::ConflictFix
+        | WorkstreamStatus::InMergeQueue
+        | WorkstreamStatus::Cancelled => ChipKind::Info,
     }
 }
 
@@ -184,11 +186,12 @@ fn mission_state_color(state: &AppState, t: &Tokens) -> Color32 {
     }
 }
 
-fn decision_color(decision: DecisionKind, t: &Tokens) -> Color32 {
+/// Guardrail decision -> chip kind for the tactical window's guardrail rows.
+fn decision_chip_kind(decision: DecisionKind) -> ChipKind {
     match decision {
-        DecisionKind::Allow => t.good,
-        DecisionKind::Deny => t.crit,
-        DecisionKind::Escalate => t.warn,
+        DecisionKind::Allow => ChipKind::Allow,
+        DecisionKind::Deny => ChipKind::Deny,
+        DecisionKind::Escalate => ChipKind::Escalate,
     }
 }
 
@@ -197,6 +200,15 @@ fn decision_label(decision: DecisionKind) -> &'static str {
         DecisionKind::Allow => "Allow",
         DecisionKind::Deny => "Deny",
         DecisionKind::Escalate => "Escalate",
+    }
+}
+
+/// Battle-report verdict -> chip kind for the kobayashi and workstream
+/// windows' verdict chips.
+fn verdict_chip_kind(verdict: Verdict) -> ChipKind {
+    match verdict {
+        Verdict::Clean => ChipKind::Good,
+        Verdict::Breached => ChipKind::Crit,
     }
 }
 
@@ -491,11 +503,11 @@ fn guardrails_group(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
 
 fn guardrail_row(ui: &mut egui::Ui, t: &Tokens, record: &bridge_core::HookDecisionRecord) {
     ui.horizontal(|ui| {
-        pill(
+        pixel::chip(
             ui,
             t,
             decision_label(record.decision),
-            decision_color(record.decision, t),
+            decision_chip_kind(record.decision),
         );
         ui.add_space(8.0);
         let label = record.tool_name.as_deref().unwrap_or(record.rule.as_str());
@@ -555,10 +567,22 @@ fn workstream_window(
         return;
     };
     let mut open = true;
-    egui::Window::new("Workstream")
-        .open(&mut open)
+    egui::Window::new("workstream_console")
+        .title_bar(false)
+        .frame(pixel::console_frame(t))
         .default_size(egui::vec2(560.0, 520.0))
+        .open(&mut open)
         .show(ctx, |ui| {
+            pixel::double_outline(ui, t);
+            ui.horizontal(|ui| {
+                pixel::station_header(ui, t, &format!("Helm console - {}", short_id(&selected)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                        state.ui.selected = None;
+                    }
+                });
+            });
+            ui.add_space(8.0);
             workstream_body(ui, t, state, selected, out);
         });
     if !open {
@@ -601,22 +625,23 @@ fn workstream_body(
         );
         ui.add_space(10.0);
         if let Some(status) = &status {
-            pill(ui, t, &status_label(status), status_color(status, t));
+            pixel::chip(ui, t, &status_label(status), status_chip_kind(status));
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let open = egui::Button::new(RichText::new("Open in VS Code").color(t.text).size(12.5))
-                .fill(t.fill);
-            if ui.add_enabled(worktree_path.is_some(), open).clicked()
+            let vscode_enabled = worktree_path.is_some();
+            let vscode = ui
+                .add_enabled_ui(vscode_enabled, |ui| {
+                    pixel::pixel_button(ui, t, "OPEN IN VS CODE", t.info)
+                })
+                .inner;
+            if vscode.clicked()
                 && let Some(path) = &worktree_path
             {
                 spawn_editor(&editor_command, path);
             }
             if matches!(status, Some(WorkstreamStatus::Flagged)) {
                 ui.add_space(8.0);
-                let override_btn =
-                    egui::Button::new(RichText::new("Override").color(t.crit).size(12.5))
-                        .fill(theme::tint(t.crit, t.bg, 0.14));
-                if ui.add(override_btn).clicked() {
+                if pixel::pixel_button(ui, t, "OVERRIDE", t.crit).clicked() {
                     out.push(BridgeCommand::OverrideFlagged {
                         workstream: selected,
                     });
@@ -665,7 +690,13 @@ fn workstream_body(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for line in &panel.tool_calls {
-                ui.label(RichText::new(line).color(t.info).size(12.0).monospace());
+                ui.label(
+                    RichText::new(line)
+                        .color(t.info)
+                        .size(12.0)
+                        .monospace()
+                        .font(theme::crt(17.0)),
+                );
             }
             for (station, text) in &panel.output {
                 ui.horizontal_wrapped(|ui| {
@@ -673,10 +704,16 @@ fn workstream_body(
                         RichText::new(station.to_string())
                             .color(t.text_2)
                             .size(12.5)
-                            .monospace(),
+                            .monospace()
+                            .font(theme::crt(17.0)),
                     );
                     ui.add_space(4.0);
-                    ui.label(RichText::new(text).color(t.text).size(13.5));
+                    ui.label(
+                        RichText::new(text)
+                            .color(t.text)
+                            .size(13.5)
+                            .font(theme::crt(17.0)),
+                    );
                 });
             }
         });
@@ -689,12 +726,27 @@ fn tactical_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
     if !open {
         return;
     }
-    egui::Window::new("Tactical")
+    egui::Window::new("tactical_console")
+        .title_bar(false)
+        .frame(pixel::console_frame(t))
+        .default_size(egui::vec2(520.0, 420.0))
         .open(&mut open)
         .show(ctx, |ui| {
+            pixel::double_outline(ui, t);
+            ui.horizontal(|ui| {
+                pixel::station_header(ui, t, "Tactical - guardrail adjudications");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                        state.ui.open_tactical = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
             guardrails_group(ui, t, state);
         });
-    state.ui.open_tactical = open;
+    if !open {
+        state.ui.open_tactical = false;
+    }
 }
 
 /// The Kobayashi Maru console: a plain summary list (workstream, verdict,
@@ -704,12 +756,27 @@ fn kobayashi_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
     if !open {
         return;
     }
-    egui::Window::new("Kobayashi Maru")
+    egui::Window::new("kobayashi_console")
+        .title_bar(false)
+        .frame(pixel::console_frame(t))
+        .default_size(egui::vec2(520.0, 420.0))
         .open(&mut open)
         .show(ctx, |ui| {
+            pixel::double_outline(ui, t);
+            ui.horizontal(|ui| {
+                pixel::station_header(ui, t, "Kobayashi Maru - battle report");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                        state.ui.open_kobayashi = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
             kobayashi_summary(ui, t, state);
         });
-    state.ui.open_kobayashi = open;
+    if !open {
+        state.ui.open_kobayashi = false;
+    }
 }
 
 fn kobayashi_summary(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
@@ -730,11 +797,11 @@ fn kobayashi_summary(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
                     .monospace(),
             );
             ui.add_space(8.0);
-            let (verdict_text, verdict_color) = match report.verdict {
-                Verdict::Clean => ("Clean", t.good),
-                Verdict::Breached => ("Breached", t.crit),
+            let verdict_text = match report.verdict {
+                Verdict::Clean => "Clean",
+                Verdict::Breached => "Breached",
             };
-            pill(ui, t, verdict_text, verdict_color);
+            pixel::chip(ui, t, verdict_text, verdict_chip_kind(report.verdict));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!("{} finding(s)", report.findings.len()))
@@ -753,12 +820,27 @@ fn computer_window(ctx: &egui::Context, t: &Tokens, state: &mut AppState) {
     if !open {
         return;
     }
-    egui::Window::new("Ship's Computer")
+    egui::Window::new("computer_console")
+        .title_bar(false)
+        .frame(pixel::console_frame(t))
+        .default_size(egui::vec2(520.0, 420.0))
         .open(&mut open)
         .show(ctx, |ui| {
+            pixel::double_outline(ui, t);
+            ui.horizontal(|ui| {
+                pixel::station_header(ui, t, "Ship's computer - log");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                        state.ui.open_computer = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
             ships_log(ui, t, state);
         });
-    state.ui.open_computer = open;
+    if !open {
+        state.ui.open_computer = false;
+    }
 }
 
 /// The viewscreen: mission title/state, the merge queue, budget usage, and
@@ -774,13 +856,27 @@ fn mission_status_window(
     if !open {
         return;
     }
-    egui::Window::new("Mission Status")
-        .open(&mut open)
+    egui::Window::new("mission_status_console")
+        .title_bar(false)
+        .frame(pixel::console_frame(t))
         .default_size(egui::vec2(340.0, 420.0))
+        .open(&mut open)
         .show(ctx, |ui| {
+            pixel::double_outline(ui, t);
+            ui.horizontal(|ui| {
+                pixel::station_header(ui, t, "Mission status");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                        state.ui.open_mission_status = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
             mission_status_body(ui, t, state, out);
         });
-    state.ui.open_mission_status = open;
+    if !open {
+        state.ui.open_mission_status = false;
+    }
 }
 
 fn mission_status_body(
@@ -805,10 +901,10 @@ fn mission_status_body(
     ui.add_space(12.0);
 
     ui.horizontal(|ui| {
-        if ui.button("Wind down").clicked() {
+        if pixel::pixel_button(ui, t, "WIND DOWN", t.info).clicked() {
             out.push(BridgeCommand::WindDown);
         }
-        if ui.button("Stop").clicked() {
+        if pixel::pixel_button(ui, t, "STOP", t.crit).clicked() {
             out.push(BridgeCommand::Shutdown);
         }
     });
@@ -953,12 +1049,12 @@ fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected:
     let earlier = reports.len().saturating_sub(1);
 
     card(ui, t, |ui| {
-        let (verdict_text, verdict_color) = match latest.verdict {
-            Verdict::Clean => ("Clean", t.good),
-            Verdict::Breached => ("Breached", t.crit),
+        let verdict_text = match latest.verdict {
+            Verdict::Clean => "Clean",
+            Verdict::Breached => "Breached",
         };
         ui.horizontal(|ui| {
-            pill(ui, t, verdict_text, verdict_color);
+            pixel::chip(ui, t, verdict_text, verdict_chip_kind(latest.verdict));
             ui.add_space(8.0);
             ui.label(
                 RichText::new(format!("Round {}", latest.round))
@@ -1053,7 +1149,8 @@ fn ships_log(ui: &mut egui::Ui, t: &Tokens, state: &AppState) {
                     ))
                     .color(color)
                     .size(12.0)
-                    .monospace(),
+                    .monospace()
+                    .font(theme::crt(17.0)),
                 );
             }
         });
