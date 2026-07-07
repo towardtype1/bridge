@@ -134,12 +134,14 @@ pub fn portrait_texture(
     tex
 }
 
-/// The deck's rendered rect at its current integer scale (mirrors
-/// `deck::render::draw_deck`'s sizing math): the dialogue box's width is a
-/// fraction of this, not of the raw window, so it stays sized to the
-/// pixel-art canvas beneath it rather than to whatever letterboxing the
-/// window's aspect ratio happens to add.
-fn deck_rect(ctx: &egui::Context) -> egui::Rect {
+/// Fallback for the deck's rendered rect, approximated from the raw
+/// viewport, for use only when the caller has no actual rect yet (before the
+/// deck's first paint this session). Callers normally have a real one -
+/// `deck::render::DeckCanvas::last_rect`, the deck's own blit rect as
+/// computed by `draw_deck` - and should prefer that: the raw viewport
+/// diverges from it whenever a panel (a banner) shrinks the `CentralPanel`
+/// the deck actually renders into.
+pub fn fallback_deck_rect(ctx: &egui::Context) -> egui::Rect {
     let screen = ctx.viewport_rect();
     let scale = crate::deck::render::integer_scale(screen.width(), screen.height()) as f32;
     let size = egui::vec2(NATIVE_W as f32 * scale, NATIVE_H as f32 * scale);
@@ -151,7 +153,10 @@ fn deck_rect(ctx: &egui::Context) -> egui::Rect {
 /// header, and body itself, then hands the `Ui` to `add_contents` for the
 /// caller's cards/choices/inputs. Reused for the Captain conference and the
 /// Tactical/Helm hails - callers wire their own buttons with
-/// `pixel::pixel_button` inside `add_contents`.
+/// `pixel::pixel_button` inside `add_contents`. `deck_rect` is the deck's
+/// actual rendered rect (`DeckCanvas::last_rect`, or `fallback_deck_rect`
+/// before the deck's first paint) - the box's width is 94% of it, so it
+/// stays sized to the pixel-art canvas rather than to raw window space.
 #[allow(clippy::too_many_arguments)]
 pub fn dialogue_box(
     ctx: &egui::Context,
@@ -161,11 +166,12 @@ pub fn dialogue_box(
     tw: &Typewriter,
     now: f64,
     reduce_motion: bool,
+    deck_rect: egui::Rect,
     portrait_slot: &mut Option<egui::TextureHandle>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> DialogueResponse {
     let mut response = DialogueResponse::default();
-    let max_width = deck_rect(ctx).width() * 0.94;
+    let max_width = deck_rect.width() * 0.94;
     let texture = portrait_texture(ctx, speaker, portrait_slot);
     let done = tw.is_done(now, reduce_motion);
 
@@ -208,7 +214,12 @@ pub fn dialogue_box(
                             );
                             ui.add_space(6.0);
 
-                            ui.horizontal(|ui| {
+                            // `horizontal_wrapped`, not `horizontal`: a plain
+                            // horizontal layout never wraps, so a long
+                            // Captain line would run on as one unbroken row
+                            // past the dialogue's (and the window's) edge
+                            // instead of wrapping within `max_width`.
+                            ui.horizontal_wrapped(|ui| {
                                 let body = tw.visible(now, reduce_motion);
                                 let body_resp = ui.add(
                                     egui::Label::new(
@@ -291,6 +302,7 @@ mod tests {
         let tw = Typewriter::new("Standing by, sir.".into(), 0.0);
         let mut slot = None;
         let mut contents_ran = false;
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0));
         let _ = ctx.run_ui(Default::default(), |ui| {
             let ctx = ui.ctx().clone();
             let resp = dialogue_box(
@@ -301,6 +313,7 @@ mod tests {
                 &tw,
                 0.0,
                 true,
+                rect,
                 &mut slot,
                 |_ui| contents_ran = true,
             );

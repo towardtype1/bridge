@@ -19,6 +19,13 @@ use eframe::egui;
 
 pub struct DeckCanvas {
     pub scene: SceneState,
+    /// The deck's actual on-screen rect from its most recent paint (the
+    /// native canvas blitted at integer scale, centered in the available
+    /// area). The dialogue box sizes itself off this rather than
+    /// approximating one from the raw viewport, since panels (banners)
+    /// shrink the `CentralPanel` the deck actually renders into. `None`
+    /// only before the deck's first paint this session.
+    pub last_rect: Option<egui::Rect>,
     texture: Option<egui::TextureHandle>,
     buf: Vec<egui::Color32>,
 }
@@ -27,6 +34,7 @@ impl Default for DeckCanvas {
     fn default() -> Self {
         Self {
             scene: SceneState::default(),
+            last_rect: None,
             texture: None,
             buf: vec![egui::Color32::BLACK; NATIVE_W * NATIVE_H],
         }
@@ -440,6 +448,7 @@ pub fn draw_deck(
     // Snap to integer screen coords: a half-pixel offset here would smear
     // the NEAREST-filtered blit across texel boundaries.
     let rect = egui::Rect::from_min_max(rect.min.round(), rect.max.round());
+    canvas.last_rect = Some(rect);
     let response = ui.allocate_rect(rect, egui::Sense::click());
     ui.painter().image(
         tex.id(),

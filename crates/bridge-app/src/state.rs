@@ -32,8 +32,25 @@ pub struct AppState {
     pub captain_feed: Vec<(CaptainSpeaker, String)>,
     /// The most recent plan proposal awaiting approval, if any.
     pub latest_proposal: Option<ProposalCard>,
+    /// Typewriter reveal cache for the Captain dialogue. See
+    /// `sync_captain_tw`.
+    pub captain_tw: Option<CaptainTw>,
     /// Ephemeral widget state (text buffers, selection). Not event-driven.
     pub ui: UiInputs,
+}
+
+/// Typewriter reveal cache for the Captain conference dialogue: identifies
+/// which `captain_feed` entry it's revealing so a repeat `sync_captain_tw`
+/// call triggered by an unrelated feed mutation (e.g. a fresh `You` line)
+/// leaves a running reveal alone, while a genuinely new Captain line
+/// restarts it.
+#[derive(Debug, Clone)]
+pub struct CaptainTw {
+    /// One past the index of the Captain-speaker line this typewriter is
+    /// revealing (`captain_feed[feed_len - 1]`) - an identity token compared
+    /// across calls, not a literal snapshot of `captain_feed.len()`.
+    pub feed_len: usize,
+    pub tw: crate::dialogue::Typewriter,
 }
 
 /// Who authored a line in the Captain conference transcript.
@@ -77,8 +94,8 @@ pub struct UiInputs {
     /// Deck's viewscreen clicked: shows the Mission Status interim window
     /// (mission title/state, merge queue, budget, Wind down / Stop).
     pub open_mission_status: bool,
-    /// Hailing the Captain on the deck clicked: shows the Captain interim
-    /// window (conference transcript and the latest plan proposal card).
+    /// Hailing the Captain (deck chair click or the HAIL button): opens the
+    /// Captain dialogue box (typewriter transcript, proposal card, input row).
     pub open_captain: bool,
 }
 
@@ -231,6 +248,30 @@ impl AppState {
     pub fn remove_escalation(&mut self, id: EscalationId) {
         self.escalations.retain(|t| t.id != id);
         self.ui.deny_reasons.remove(&id);
+    }
+
+    /// Sync the Captain dialogue's typewriter to the latest Captain line in
+    /// `captain_feed`: a genuinely new Captain message restarts the reveal
+    /// from `now`; anything else (a `You` line, a repeat call with no new
+    /// Captain message) leaves a running reveal untouched. `None` when no
+    /// Captain has spoken yet - the caller falls back to a static
+    /// placeholder line.
+    pub fn sync_captain_tw(&mut self, now: f64) -> Option<&CaptainTw> {
+        let (idx, (_, text)) = self
+            .captain_feed
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, entry)| entry.0 == CaptainSpeaker::Captain)?;
+        let marker = idx + 1;
+        let stale = !matches!(&self.captain_tw, Some(existing) if existing.feed_len == marker);
+        if stale {
+            self.captain_tw = Some(CaptainTw {
+                feed_len: marker,
+                tw: crate::dialogue::Typewriter::new(text.clone(), now),
+            });
+        }
+        self.captain_tw.as_ref()
     }
 
     /// Banner text while rate limited; None when no banner should show.
@@ -873,6 +914,44 @@ mod tests {
             detail: None,
         }));
         assert!(s.latest_proposal.is_none());
+    }
+
+    #[test]
+    fn captain_typewriter_restarts_on_new_captain_message_not_on_user_lines() {
+        let mut s = AppState::default();
+        let mission = MissionId::new();
+        s.apply(BridgeEvent::CaptainSays {
+            mission,
+            text: "First.".into(),
+        });
+        let tw1 = s.sync_captain_tw(1.0).unwrap();
+        assert_eq!(tw1.tw.text(), "First.");
+
+        // A `You` line grows the feed but isn't a new Captain message: the
+        // running reveal must not restart. If it had restarted, `started`
+        // would be 2.0 and `visible(2.0, ..)` would show nothing; since it
+        // didn't, `started` is still 1.0 and the 6-char "First." (well
+        // under 1s * 125 chars/s) is fully revealed by now=2.0.
+        s.apply(BridgeEvent::UserSaid {
+            mission,
+            text: "go on".into(),
+        });
+        let tw_after_user = s.sync_captain_tw(2.0).unwrap();
+        assert_eq!(tw_after_user.tw.text(), "First.");
+        assert_eq!(tw_after_user.tw.visible(2.0, false), "First.");
+
+        // A genuinely new Captain message restarts the reveal from `now`.
+        s.apply(BridgeEvent::CaptainSays {
+            mission,
+            text: "Second.".into(),
+        });
+        let tw2 = s.sync_captain_tw(3.0).unwrap();
+        assert_eq!(tw2.tw.text(), "Second.");
+        assert_eq!(
+            tw2.tw.visible(3.0, false),
+            "",
+            "freshly restarted, nothing revealed yet"
+        );
     }
 
     #[test]

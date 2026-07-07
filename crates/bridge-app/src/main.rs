@@ -135,9 +135,22 @@ fn load_config(
 
 // -- GUI mode -----------------------------------------------------------------
 
+/// Portrait texture cache for the RPG dialogue box, one slot per speaker.
+/// Lives on `BridgeApp` rather than `AppState`: `egui::TextureHandle`
+/// doesn't derive `Debug`, and `AppState` does.
+#[derive(Default)]
+pub struct DialogueTextures {
+    pub captain: Option<egui::TextureHandle>,
+    #[allow(dead_code)] // wired up in Task 6 (Tactical hail)
+    pub tactical: Option<egui::TextureHandle>,
+    #[allow(dead_code)] // wired up in Task 6 (Helm hail)
+    pub helm: Option<egui::TextureHandle>,
+}
+
 struct BridgeApp {
     state: AppState,
     deck: deck::render::DeckCanvas,
+    dialogue_textures: DialogueTextures,
     ui_cfg: UiConfig,
     events_rx: broadcast::Receiver<BridgeEvent>,
     commands: mpsc::Sender<BridgeCommand>,
@@ -164,6 +177,7 @@ impl BridgeApp {
         Self {
             state,
             deck: deck::render::DeckCanvas::default(),
+            dialogue_textures: DialogueTextures::default(),
             ui_cfg,
             events_rx,
             commands,
@@ -221,6 +235,7 @@ impl eframe::App for BridgeApp {
             &ctx,
             &mut self.state,
             &mut self.deck,
+            &mut self.dialogue_textures,
             &self.ui_cfg,
             &mut self.out_commands,
         );

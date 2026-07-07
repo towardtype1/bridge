@@ -10,6 +10,10 @@ use eframe::egui::{self, Color32};
 pub struct Tokens {
     pub bg: Color32,
     pub surface: Color32,
+    // No current consumer: the composer (its last reader) was retired in
+    // Task 5. Kept for `Tokens`' struct-shape parity per the plan; Task 7's
+    // sweep decides whether a future caller claims it or it's dropped.
+    #[allow(dead_code)]
     pub surface_2: Color32,
     pub sidebar: Color32,
     pub text: Color32,

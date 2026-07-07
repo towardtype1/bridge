@@ -5,18 +5,20 @@
 //! `CentralPanel` spans the entire remaining viewport now that the
 //! Apple-minimal left sidebar and right inspector are gone.
 //! - No app toolbar; the OS supplies the title bar.
-//! - Center: the deck (`crate::deck::render::draw_deck`) plus six interim
+//! - Center: the deck (`crate::deck::render::draw_deck`) plus five interim
 //!   `egui::Window`s opened by deck clicks: workstream detail (title +
 //!   status pill + "Open in VS Code" (+ Override while Flagged), a
 //!   station/branch subtitle, a battle-report card, turn history, and the
 //!   activity feed), Tactical (the exceptions-only Guardrails feed),
 //!   Kobayashi Maru (battle-report summaries), Ship's Computer (the Ship's
-//!   Log), Mission Status (mission title/state, the merge queue, budget
-//!   usage, and the Wind down / Stop commands - formerly sidebar chrome),
-//!   and Captain (the conference transcript and the latest plan proposal
-//!   card, opened by hailing the Captain on the deck).
-//! - Bottom composer: a rounded field addressed to the Captain; Enter or the
-//!   circular send button starts a mission.
+//!   Log), and Mission Status (mission title/state, the merge queue, budget
+//!   usage, and the Wind down / Stop commands - formerly sidebar chrome).
+//! - Captain conference: hailing the Captain on the deck opens `captain_dialogue`,
+//!   the shared RPG dialogue chrome (`crate::dialogue::dialogue_box`) hosting
+//!   the transcript scrollback, the typewriter body, the Mission Briefing
+//!   proposal card, and the "say something to the Captain" input row. A
+//!   floating HAIL THE CAPTAIN button (`Area`, `CENTER_BOTTOM`) opens it when
+//!   no dialogue is already open; there is no bottom composer anymore.
 //! - Conditional top banners: paused (rate-limit / budget) and compat warning.
 //! - Modals (`Window`): escalation and merge confirmation.
 //!
@@ -27,6 +29,7 @@
 //! rather than a `Context`. `draw` keeps its context-based signature by
 //! building the root `Ui` itself, exactly as `Context::run_ui` does.
 
+use crate::dialogue;
 use crate::pixel::{self, ChipKind};
 use crate::state::{
     AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
@@ -45,6 +48,7 @@ pub fn draw(
     ctx: &egui::Context,
     state: &mut AppState,
     deck: &mut crate::deck::render::DeckCanvas,
+    textures: &mut crate::DialogueTextures,
     ui_cfg: &bridge_core::UiConfig,
     out_commands: &mut Vec<BridgeCommand>,
 ) {
@@ -57,7 +61,7 @@ pub fn draw(
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    draw_in(&mut root, &t, state, deck, ui_cfg, out_commands);
+    draw_in(&mut root, &t, state, deck, textures, ui_cfg, out_commands);
 }
 
 /// Draw one frame into a root `Ui`. Panel order is top, bottom, left, right,
@@ -67,14 +71,14 @@ fn draw_in(
     t: &Tokens,
     state: &mut AppState,
     deck: &mut crate::deck::render::DeckCanvas,
+    textures: &mut crate::DialogueTextures,
     ui_cfg: &bridge_core::UiConfig,
     out: &mut Vec<BridgeCommand>,
 ) {
     let ctx = ui.ctx().clone();
     paused_banner(ui, t, state, out);
     compat_banner(ui, t, state);
-    bottom_composer(ui, t, state, out);
-    center(ui, t, state, deck, ui_cfg, out);
+    center(ui, t, state, deck, textures, ui_cfg, out);
     escalation_modal(&ctx, t, state, out);
     merge_modal(&ctx, t, state, out);
 
@@ -104,18 +108,6 @@ pub fn apply_deck_action(state: &mut AppState, action: crate::deck::DeckAction) 
 }
 
 // -- helper widgets -----------------------------------------------------------
-
-/// A tinted, full-round status pill: semantic colour text on a ~14% tint.
-fn pill(ui: &mut egui::Ui, t: &Tokens, text: &str, color: Color32) {
-    let bg = theme::tint(color, t.surface, 0.14);
-    egui::Frame::new()
-        .fill(bg)
-        .corner_radius(255)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).color(color).size(11.5));
-        });
-}
 
 /// A grouped-inset card: a filled rounded container with a hairline border and
 /// no shadow (the macOS System Settings look).
@@ -324,69 +316,6 @@ fn compat_banner(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
         });
 }
 
-// -- composer -----------------------------------------------------------------
-
-fn bottom_composer(
-    ui: &mut egui::Ui,
-    t: &Tokens,
-    state: &mut AppState,
-    out: &mut Vec<BridgeCommand>,
-) {
-    let frame = egui::Frame::new()
-        .fill(t.surface_2)
-        .inner_margin(egui::Margin::symmetric(20, 14));
-    egui::Panel::bottom("composer").frame(frame).show(ui, |ui| {
-        let input_id = egui::Id::new("composer_input");
-        let focused = ui.memory(|m| m.has_focus(input_id));
-        let stroke = if focused {
-            egui::Stroke::new(1.5, t.accent)
-        } else {
-            egui::Stroke::new(1.0, t.hair)
-        };
-        let field = egui::Frame::new()
-            .fill(t.surface)
-            .stroke(stroke)
-            .corner_radius(15)
-            .inner_margin(egui::Margin::symmetric(8, 6));
-
-        let mut submit = false;
-        field.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                pill(ui, t, "Captain", t.accent);
-                ui.add_space(8.0);
-                let send_w = 28.0;
-                let text_w = (ui.available_width() - send_w - 10.0).max(60.0);
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut state.ui.objective)
-                        .id(input_id)
-                        .frame(egui::Frame::new())
-                        .desired_width(text_w)
-                        .hint_text("Hail the Captain..."),
-                );
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    submit = true;
-                }
-                let send = ui.add_sized(
-                    egui::vec2(send_w, send_w),
-                    egui::Button::new(RichText::new("↑").color(Color32::WHITE).size(15.0))
-                        .fill(t.accent)
-                        .corner_radius(255),
-                );
-                if send.clicked() {
-                    submit = true;
-                }
-            });
-        });
-
-        if submit && !state.ui.objective.trim().is_empty() {
-            out.push(BridgeCommand::SayToCaptain {
-                text: state.ui.objective.trim().to_owned(),
-            });
-            state.ui.objective.clear();
-        }
-    });
-}
-
 // -- mission status -----------------------------------------------------------
 
 /// Title text for the mission header: the objective while planning, else the
@@ -525,12 +454,15 @@ fn guardrail_row(ui: &mut egui::Ui, t: &Tokens, record: &bridge_core::HookDecisi
 /// tactical, Kobayashi, computer, and viewscreen (mission status) consoles
 /// each open a stock `egui::Window` on top of it. These five windows are
 /// interim: faithful to the previous flat layout, not yet restyled for the
-/// deck (a later task covers that).
+/// deck (a later task covers that). The Captain conference is not a window
+/// at all: it's the RPG dialogue box, anchored to the bottom of the deck's
+/// own rect.
 fn center(
     ui: &mut egui::Ui,
     t: &Tokens,
     state: &mut AppState,
     deck: &mut crate::deck::render::DeckCanvas,
+    textures: &mut crate::DialogueTextures,
     ui_cfg: &bridge_core::UiConfig,
     out: &mut Vec<BridgeCommand>,
 ) {
@@ -552,7 +484,29 @@ fn center(
     kobayashi_window(&ctx, t, state);
     computer_window(&ctx, t, state);
     mission_status_window(&ctx, t, state, out);
-    captain_window(&ctx, t, state, out);
+
+    let deck_rect = deck
+        .last_rect
+        .unwrap_or_else(|| dialogue::fallback_deck_rect(&ctx));
+    captain_dialogue(&ctx, t, state, textures, deck_rect, ui_cfg, out);
+
+    if !any_dialogue_open(state) {
+        egui::Area::new(egui::Id::new("hail_button"))
+            .anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
+            .show(&ctx, |ui| {
+                if pixel::pixel_button(ui, t, "HAIL THE CAPTAIN", t.accent).clicked() {
+                    state.ui.open_captain = true;
+                }
+            });
+    }
+}
+
+/// Whether any RPG dialogue is currently open: gates the floating HAIL
+/// button so it never competes with an open dialogue for the same
+/// bottom-anchored screen space. Task 6 extends this with the Tactical and
+/// Helm hail dialogues.
+fn any_dialogue_open(state: &AppState) -> bool {
+    state.ui.open_captain
 }
 
 /// Selecting a console on the deck opens this window; closing it (the
@@ -945,95 +899,159 @@ fn budget_group(ui: &mut egui::Ui, t: &Tokens, budget: &BudgetSnapshot) {
     }
 }
 
-/// Hailing the Captain from the deck opens this window: the conference
-/// transcript and the latest plan proposal card.
-fn captain_window(
+/// Hailing the Captain from the deck opens this RPG dialogue: a compact
+/// scrollback of earlier conference lines, the Captain's typewriter body (a
+/// static "Standing by, sir." before the first `CaptainSays`), the Mission
+/// Briefing proposal card when one is pending, and the "say something to
+/// the Captain" input row. Replaces `captain_window`/`captain_view`; the
+/// proposal-card rendering that lived in `captain_view` now lives in this
+/// dialogue's `add_contents`.
+fn captain_dialogue(
     ctx: &egui::Context,
     t: &Tokens,
     state: &mut AppState,
+    textures: &mut crate::DialogueTextures,
+    deck_rect: egui::Rect,
+    ui_cfg: &bridge_core::UiConfig,
     out: &mut Vec<BridgeCommand>,
 ) {
-    let mut open = state.ui.open_captain;
-    if !open {
+    if !state.ui.open_captain {
         return;
     }
-    egui::Window::new("Captain")
-        .open(&mut open)
-        .default_size(egui::vec2(560.0, 520.0))
-        .show(ctx, |ui| {
-            captain_view(ui, t, state, out);
-        });
-    state.ui.open_captain = open;
-}
+    let now = ctx.input(|i| i.time);
+    let reduce_motion = ui_cfg.reduce_motion;
 
-/// Interim conversation surface: transcript and latest proposal card. The
-/// Ship's Computer window owns the Ship's Log; this window doesn't repeat
-/// it. Sub-project C replaces this with the deck dialogue.
-fn captain_view(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<BridgeCommand>) {
-    section_label(ui, t, "Captain");
-    ui.add_space(8.0);
-    if let Some(card_data) = &state.latest_proposal {
-        card(ui, t, |ui| {
-            ui.label(
-                RichText::new(format!("Proposed plan - revision {}", card_data.revision))
-                    .color(t.text)
-                    .size(13.0)
-                    .strong(),
-            );
-            ui.add_space(6.0);
-            for ws in &card_data.plan.workstreams {
-                let marker = match &card_data.diff {
-                    Some(d) if d.added.contains(&ws.slug) => "+",
-                    Some(d) if d.revised.contains(&ws.slug) => "~",
-                    _ => "-",
+    // The typewriter body: the last Captain line, restarted by
+    // `sync_captain_tw` whenever a genuinely new one arrives; a static,
+    // already-`complete()`d placeholder before the first `CaptainSays`.
+    // `tw_source_idx` records which `captain_feed` entry `tw` is revealing,
+    // so the scrollback below can skip it (it's shown live, not "earlier").
+    let cached = state.sync_captain_tw(now);
+    let tw_source_idx = cached.map(|c| c.feed_len - 1);
+    let tw: dialogue::Typewriter = match cached {
+        Some(cached) => cached.tw.clone(),
+        None => {
+            let mut placeholder = dialogue::Typewriter::new("Standing by, sir.".into(), now);
+            placeholder.complete();
+            placeholder
+        }
+    };
+
+    let resp = dialogue::dialogue_box(
+        ctx,
+        t,
+        "captain_dialogue",
+        dialogue::Speaker::Captain,
+        &tw,
+        now,
+        reduce_motion,
+        deck_rect,
+        &mut textures.captain,
+        |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("captain_feed_scrollback")
+                .max_height(120.0)
+                .auto_shrink([false, true])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for (i, (speaker, text)) in state.captain_feed.iter().enumerate() {
+                        if Some(i) == tw_source_idx {
+                            continue;
+                        }
+                        let (name, color) = match speaker {
+                            CaptainSpeaker::You => ("You", t.text_2),
+                            CaptainSpeaker::Captain => ("Captain", t.accent),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(name).font(theme::crt(16.0)).color(color));
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(text).font(theme::crt(16.0)).color(t.text_2));
+                        });
+                    }
+                });
+
+            if let Some(card_data) = &state.latest_proposal {
+                let revision = card_data.revision;
+                let header = if card_data.diff.is_some() {
+                    "PLAN AMENDMENT - DIFF vs CURRENT".to_owned()
+                } else {
+                    format!("MISSION BRIEFING - REVISION {revision}")
                 };
-                ui.label(
-                    RichText::new(format!("{marker} {}  {}", ws.slug, ws.title))
-                        .color(t.text_2)
-                        .size(12.5)
-                        .monospace(),
+                ui.add_space(8.0);
+                egui::Frame::new()
+                    .stroke(egui::Stroke::new(
+                        2.0,
+                        theme::tint(t.accent, t.surface, 0.6),
+                    ))
+                    .fill(theme::tint(t.accent, t.surface, 0.05))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(header)
+                                .font(theme::pixel(9.0))
+                                .color(t.accent),
+                        );
+                        ui.add_space(6.0);
+                        for ws in &card_data.plan.workstreams {
+                            let (marker, color) = match &card_data.diff {
+                                Some(d) if d.added.contains(&ws.slug) => ("+", t.good),
+                                Some(d) if d.revised.contains(&ws.slug) => ("~", t.warn),
+                                _ => (">", t.text_3),
+                            };
+                            ui.label(
+                                RichText::new(format!("{marker} {}  {}", ws.slug, ws.title))
+                                    .font(theme::crt(17.0))
+                                    .color(color),
+                            );
+                        }
+                        if let Some(d) = &card_data.diff {
+                            for slug in &d.removed {
+                                ui.label(
+                                    RichText::new(format!("x {slug}  (cancelled)"))
+                                        .font(theme::crt(17.0))
+                                        .color(t.crit),
+                                );
+                            }
+                        }
+                        ui.add_space(8.0);
+                        if pixel::pixel_button(ui, t, "MAKE IT SO", t.good).clicked() {
+                            out.push(BridgeCommand::ApproveProposal { revision });
+                        }
+                    });
+            }
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let send_w = 56.0;
+                let text_resp = ui.add(
+                    egui::TextEdit::singleline(&mut state.ui.objective)
+                        .font(theme::crt(18.0))
+                        .desired_width((ui.available_width() - send_w - 8.0).max(60.0))
+                        .hint_text("Say something to the Captain..."),
                 );
-            }
-            if let Some(d) = &card_data.diff {
-                for slug in &d.removed {
-                    ui.label(
-                        RichText::new(format!("x {slug}  (cancelled)"))
-                            .color(t.crit)
-                            .size(12.5)
-                            .monospace(),
-                    );
+                let mut submit =
+                    text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if pixel::pixel_button(ui, t, "SEND", t.info).clicked() {
+                    submit = true;
                 }
-            }
-            ui.add_space(8.0);
-            let btn =
-                egui::Button::new(RichText::new("Make it so").color(Color32::WHITE).size(12.5))
-                    .fill(t.accent);
-            if ui.add(btn).clicked() {
-                out.push(BridgeCommand::ApproveProposal {
-                    revision: card_data.revision,
-                });
-            }
-        });
-        ui.add_space(12.0);
+                if submit && !state.ui.objective.trim().is_empty() {
+                    out.push(BridgeCommand::SayToCaptain {
+                        text: state.ui.objective.trim().to_owned(),
+                    });
+                    state.ui.objective.clear();
+                }
+            });
+        },
+    );
+
+    if resp.text_clicked
+        && let Some(cached) = state.captain_tw.as_mut()
+    {
+        cached.tw.complete();
     }
-    egui::ScrollArea::vertical()
-        .id_salt("captain_feed")
-        .stick_to_bottom(true)
-        .max_height(ui.available_height() * 0.5)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for (speaker, text) in &state.captain_feed {
-                let (name, color) = match speaker {
-                    CaptainSpeaker::You => ("You", t.text_2),
-                    CaptainSpeaker::Captain => ("Captain", t.accent),
-                };
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(name).color(color).size(12.5).strong());
-                    ui.add_space(4.0);
-                    ui.label(RichText::new(text).color(t.text).size(13.5));
-                });
-            }
-        });
+    if resp.closed {
+        state.ui.open_captain = false;
+    }
 }
 
 fn battle_report_card(ui: &mut egui::Ui, t: &Tokens, state: &AppState, selected: WorkstreamId) {
