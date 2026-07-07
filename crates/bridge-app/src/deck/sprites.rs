@@ -77,6 +77,38 @@ pub const CHAIR_CAPT: SpriteMap = &[
 
 pub const EXCLAIM: SpriteMap = &["RR", "RR", "RR", "..", "RR"];
 
+/// 28x28 front bust for the dialogue box; palette-swapped per speaker.
+pub const PORTRAIT: SpriteMap = &[
+    "............................",
+    ".........HHHHHHHHHH.........",
+    ".......HHHHHHHHHHHHHH.......",
+    "......HHHHHHHHHHHHHHHH......",
+    ".....HHHHHHHHHHHHHHHHHH.....",
+    ".....HHHHHHHHHHHHHHHHHH.....",
+    ".....HHKKKKKKKKKKKKKKHH.....",
+    ".....HKKKKKKKKKKKKKKKKH.....",
+    ".....HKKKKKKKKKKKKKKKKH.....",
+    ".....HKKWWKKKKKKKKWWKKH.....",
+    ".....HKKEWKKKKKKKKEWKKH.....",
+    ".....HKKKKKKKKKKKKKKKKH.....",
+    ".....HKKKKKKKNNKKKKKKKH.....",
+    ".....HKKKKKKKNNKKKKKKKH.....",
+    "......KKKKKKKKKKKKKKKK......",
+    "......KKKMMMMMMMMMMKKK......",
+    ".......KKKKKKKKKKKKKK.......",
+    "........KKKKKKKKKKKK........",
+    ".........KKKKKKKKKK.........",
+    "......UUUUUKKKKKKUUUUU......",
+    "....UUUUUUUUKKKKUUUUUUUU....",
+    "...UUUUUUUUUUUUUUUUUUUUU....",
+    "...UUUUUUUUUUUUUUUUUUUUUU...",
+    "..UUUUUUUUUUUUUUUUUUUUUUUU..",
+    "..UUUDDUUUUUUUUUUUUUUUUUUU..",
+    "..UUUDDUUUUUUUUUUUUUUUUUUU..",
+    "..UUUDDUUUUUUUUUUUUUUUUUUU..",
+    "............................",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
@@ -228,6 +260,48 @@ pub fn sprite_color(map_char: u8, c: &CrewColors) -> Option<Rgb> {
     }
 }
 
+/// Speaker family for the dialogue box's `PORTRAIT` bust; each swaps hair,
+/// uniform, and collar-accent colors while sharing skin/eyes/nose/mouth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortraitSpeaker {
+    Command,
+    Tactical,
+    Helm,
+}
+
+/// Resolve one `PORTRAIT` map char to a color for `speaker`. `None` for `.`
+/// (transparent background) and any other unmapped byte.
+pub fn portrait_color(map_char: u8, speaker: PortraitSpeaker) -> Option<Rgb> {
+    let (hair, uniform, collar) = match speaker {
+        PortraitSpeaker::Command => (
+            Rgb(0x5a, 0x46, 0x32),
+            Rgb(0x8c, 0x2f, 0x39),
+            Rgb(0x5e, 0x1f, 0x26),
+        ),
+        PortraitSpeaker::Tactical => (
+            Rgb(0x1a, 0x1a, 0x22),
+            Rgb(0xc9, 0x90, 0x3a),
+            Rgb(0x8a, 0x5f, 0x1e),
+        ),
+        PortraitSpeaker::Helm => (
+            Rgb(0x8c, 0x6a, 0x3a),
+            Rgb(0xc9, 0x90, 0x3a),
+            Rgb(0x8a, 0x5f, 0x1e),
+        ),
+    };
+    match map_char {
+        b'H' => Some(hair),
+        b'K' => Some(Rgb(0xe0, 0xb4, 0x8c)), // skin
+        b'W' => Some(Rgb(0xff, 0xff, 0xff)), // eye-white
+        b'E' => Some(Rgb(0x2a, 0x2a, 0x3a)), // eye
+        b'N' => Some(Rgb(0xc9, 0x9a, 0x74)), // nose
+        b'M' => Some(Rgb(0xb0, 0x78, 0x50)), // mouth
+        b'U' => Some(uniform),
+        b'D' => Some(collar),
+        _ => None,
+    }
+}
+
 /// What a helm console screen shows for a workstream state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleVisual {
@@ -302,6 +376,7 @@ mod tests {
         assert_rectangular(CREW_WALK_B, 12, 14);
         assert_rectangular(CHAIR_CAPT, 16, 14);
         assert_rectangular(EXCLAIM, 2, 5);
+        assert_rectangular(PORTRAIT, 28, 28);
     }
 
     #[test]
@@ -312,6 +387,27 @@ mod tests {
                 for &b in row.as_bytes() {
                     if b != b'.' {
                         assert!(sprite_color(b, &c).is_some(), "unmapped char {}", b as char);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_portrait_char_resolves_for_every_speaker() {
+        for speaker in [
+            PortraitSpeaker::Command,
+            PortraitSpeaker::Tactical,
+            PortraitSpeaker::Helm,
+        ] {
+            for row in PORTRAIT {
+                for &b in row.as_bytes() {
+                    if b != b'.' {
+                        assert!(
+                            portrait_color(b, speaker).is_some(),
+                            "unmapped portrait char {} for {speaker:?}",
+                            b as char
+                        );
                     }
                 }
             }
