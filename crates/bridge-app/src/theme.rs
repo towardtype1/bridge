@@ -1,17 +1,11 @@
-//! Apple-minimal design tokens and the egui theme they produce.
-//! One source of truth for both light and dark; see the design spec's
-//! colour tables.
+//! The single dark pixel theme. One committed visual world: square corners,
+//! no shadows, phosphor accents shared with the deck's sprite constants.
 
+use crate::deck::sprites::{AMBER, CYAN, GREEN, RED};
 use eframe::egui::{self, Color32};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-}
-
-/// Resolved palette for one theme. Semantic colours (good/warn/crit/info)
-/// are separate from the accent and always used with a label.
+/// Resolved palette. Semantic colours (good/warn/crit/info) are separate
+/// from the accent and always used with a label.
 #[derive(Debug, Clone, Copy)]
 pub struct Tokens {
     pub bg: Color32,
@@ -36,50 +30,34 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-pub fn tokens(mode: ThemeMode) -> Tokens {
-    match mode {
-        ThemeMode::Light => Tokens {
-            bg: rgb(0xF5, 0xF5, 0xF7),
-            surface: rgb(0xFF, 0xFF, 0xFF),
-            surface_2: rgb(0xFB, 0xFB, 0xFD),
-            sidebar: rgb(0xF4, 0xF4, 0xF6),
-            text: rgb(0x1D, 0x1D, 0x1F),
-            text_2: rgb(0x6E, 0x6E, 0x73),
-            text_3: rgb(0x8E, 0x8E, 0x93),
-            hair: rgb(0xD9, 0xD9, 0xDE),
-            hair_2: rgb(0xE8, 0xE8, 0xEC),
-            accent: rgb(0x00, 0x71, 0xE3),
-            fill: rgb(0xEC, 0xEC, 0xEF),
-            fill_2: rgb(0xE3, 0xE3, 0xE8),
-            good: rgb(0x1E, 0x87, 0x4C),
-            warn: rgb(0x9A, 0x6A, 0x00),
-            crit: rgb(0xC8, 0x32, 0x2A),
-            info: rgb(0x00, 0x71, 0xE3),
-        },
-        ThemeMode::Dark => Tokens {
-            bg: rgb(0x1C, 0x1C, 0x1E),
-            surface: rgb(0x2C, 0x2C, 0x2E),
-            surface_2: rgb(0x26, 0x26, 0x28),
-            sidebar: rgb(0x23, 0x23, 0x25),
-            text: rgb(0xF5, 0xF5, 0xF7),
-            text_2: rgb(0xA1, 0xA1, 0xA6),
-            text_3: rgb(0x8E, 0x8E, 0x93),
-            hair: rgb(0x3A, 0x3A, 0x3C),
-            hair_2: rgb(0x31, 0x31, 0x34),
-            accent: rgb(0x0A, 0x84, 0xFF),
-            fill: rgb(0x3A, 0x3A, 0x3C),
-            fill_2: rgb(0x48, 0x48, 0x4A),
-            good: rgb(0x30, 0xD1, 0x58),
-            warn: rgb(0xFF, 0xA0, 0x00),
-            crit: rgb(0xFF, 0x45, 0x3A),
-            info: rgb(0x0A, 0x84, 0xFF),
-        },
+fn deck(c: crate::deck::sprites::Rgb) -> Color32 {
+    Color32::from_rgb(c.0, c.1, c.2)
+}
+
+pub fn tokens() -> Tokens {
+    Tokens {
+        bg: rgb(0x06, 0x08, 0x11),
+        surface: rgb(0x0e, 0x13, 0x22),
+        surface_2: rgb(0x12, 0x19, 0x33),
+        sidebar: rgb(0x12, 0x19, 0x33),
+        text: rgb(0xc9, 0xd4, 0xe8),
+        text_2: rgb(0x7c, 0x89, 0xa6),
+        text_3: rgb(0x55, 0x62, 0x8a),
+        hair: rgb(0x23, 0x2c, 0x47),
+        hair_2: rgb(0x1a, 0x21, 0x38),
+        accent: deck(AMBER),
+        fill: rgb(0x12, 0x19, 0x33),
+        fill_2: rgb(0x1a, 0x21, 0x38),
+        good: deck(GREEN),
+        warn: deck(AMBER),
+        crit: deck(RED),
+        info: deck(CYAN),
     }
 }
 
 /// Blend `base` at `pct` (0..=1) over the opaque `over` ground, returning an
-/// opaque colour. Used for tinted pill/badge/selection backgrounds since
-/// egui has no color-mix.
+/// opaque colour. Used for tinted chip/selection backgrounds since egui has
+/// no color-mix.
 pub fn tint(base: Color32, over: Color32, pct: f32) -> Color32 {
     let p = pct.clamp(0.0, 1.0);
     let mix = |b: u8, o: u8| ((b as f32) * p + (o as f32) * (1.0 - p)).round() as u8;
@@ -90,12 +68,11 @@ pub fn tint(base: Color32, over: Color32, pct: f32) -> Color32 {
     )
 }
 
-pub fn visuals(mode: ThemeMode) -> egui::Visuals {
-    let t = tokens(mode);
-    let mut v = match mode {
-        ThemeMode::Light => egui::Visuals::light(),
-        ThemeMode::Dark => egui::Visuals::dark(),
-    };
+/// egui-wide visuals for the pixel world: dark, square, shadowless.
+pub fn visuals() -> egui::Visuals {
+    let t = tokens();
+    let mut v = egui::Visuals::dark();
+    v.override_text_color = Some(t.text);
     v.panel_fill = t.bg;
     v.window_fill = t.surface;
     v.extreme_bg_color = t.fill;
@@ -108,52 +85,97 @@ pub fn visuals(mode: ThemeMode) -> egui::Visuals {
     v.widgets.inactive.bg_fill = t.fill;
     v.widgets.hovered.bg_fill = t.fill_2;
     v.widgets.active.bg_fill = t.fill_2;
-    v.window_stroke = egui::Stroke::new(1.0, t.hair);
-    // No shadows on inline content or popups; the OS window casts its own.
+    v.window_stroke = egui::Stroke::new(2.0, t.info);
     v.window_shadow = egui::epaint::Shadow::NONE;
     v.popup_shadow = egui::epaint::Shadow::NONE;
-    let radius = egui::CornerRadius::same(8);
+    let radius = egui::CornerRadius::ZERO;
     v.widgets.noninteractive.corner_radius = radius;
     v.widgets.inactive.corner_radius = radius;
     v.widgets.hovered.corner_radius = radius;
     v.widgets.active.corner_radius = radius;
-    v.window_corner_radius = egui::CornerRadius::same(13);
+    v.widgets.open.corner_radius = radius;
+    v.menu_corner_radius = radius;
+    v.window_corner_radius = radius;
     v
+}
+
+/// Register the committed font assets under the "pixel" and "crt" families.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "press-start-2p".into(),
+        egui::FontData::from_static(include_bytes!(
+            "../../../assets/fonts/PressStart2P-Regular.ttf"
+        ))
+        .into(),
+    );
+    fonts.font_data.insert(
+        "vt323".into(),
+        egui::FontData::from_static(include_bytes!("../../../assets/fonts/VT323-Regular.ttf"))
+            .into(),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name("pixel".into()),
+        vec!["press-start-2p".into()],
+    );
+    fonts
+        .families
+        .insert(egui::FontFamily::Name("crt".into()), vec!["vt323".into()]);
+    ctx.set_fonts(fonts);
+}
+
+#[allow(dead_code)] // consumed by Tasks C2-C6; remove the allow in Task C7
+pub fn pixel(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("pixel".into()))
+}
+
+#[allow(dead_code)] // consumed by Tasks C2-C6; remove the allow in Task C7
+pub fn crt(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("crt".into()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::Color32;
 
     #[test]
-    fn tokens_differ_by_mode() {
-        assert_eq!(
-            tokens(ThemeMode::Light).accent,
-            Color32::from_rgb(0x00, 0x71, 0xE3)
-        );
-        assert_eq!(
-            tokens(ThemeMode::Dark).accent,
-            Color32::from_rgb(0x0A, 0x84, 0xFF)
-        );
-        assert_ne!(tokens(ThemeMode::Light).bg, tokens(ThemeMode::Dark).bg);
+    fn tokens_are_the_pixel_palette() {
+        let t = tokens();
+        assert_eq!(t.bg, Color32::from_rgb(0x06, 0x08, 0x11));
+        assert_eq!(t.accent, Color32::from_rgb(0xff, 0xb6, 0x48));
+        assert_eq!(t.info, Color32::from_rgb(0x59, 0xc8, 0xff));
+        assert_eq!(t.crit, Color32::from_rgb(0xff, 0x5a, 0x4e));
+    }
+
+    #[test]
+    fn visuals_are_square_and_shadowless() {
+        let v = visuals();
+        assert_eq!(v.window_corner_radius, egui::CornerRadius::ZERO);
+        assert_eq!(v.window_shadow, egui::epaint::Shadow::NONE);
+        assert!(v.dark_mode);
+    }
+
+    #[test]
+    fn fonts_register_pixel_and_crt_families() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        // Fonts materialize on the first frame pass; render one that lays
+        // out text in both families - an unknown family panics here.
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.label(egui::RichText::new("PIXEL").font(pixel(10.0)));
+            ui.label(egui::RichText::new("CRT").font(crt(18.0)));
+        });
+        let families = ctx.fonts(|f| f.families());
+        assert!(families.contains(&egui::FontFamily::Name("pixel".into())));
+        assert!(families.contains(&egui::FontFamily::Name("crt".into())));
     }
 
     #[test]
     fn tint_blends_toward_base() {
-        // 0% -> the ground; 100% -> the base colour.
         let base = Color32::from_rgb(200, 0, 0);
         let over = Color32::from_rgb(0, 0, 0);
         assert_eq!(tint(base, over, 0.0), over);
         assert_eq!(tint(base, over, 1.0), base);
-        let mid = tint(base, over, 0.5);
-        assert_eq!(mid, Color32::from_rgb(100, 0, 0));
-    }
-
-    #[test]
-    fn visuals_have_no_window_shadow() {
-        let v = visuals(ThemeMode::Light);
-        assert_eq!(v.window_shadow.blur, 0);
-        assert_eq!(v.popup_shadow.blur, 0);
+        assert_eq!(tint(base, over, 0.5), Color32::from_rgb(100, 0, 0));
     }
 }

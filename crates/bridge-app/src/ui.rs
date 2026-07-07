@@ -31,7 +31,7 @@ use crate::state::{
     AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
     status_label,
 };
-use crate::theme::{self, ThemeMode, Tokens};
+use crate::theme::{self, Tokens};
 use bridge_core::{
     BridgeCommand, BudgetExtension, BudgetSnapshot, DecisionKind, LogLevel, MergeQueueState,
     MissionState, PauseReason, UserDecision, Verdict, WorkstreamId, WorkstreamStatus,
@@ -47,12 +47,8 @@ pub fn draw(
     ui_cfg: &bridge_core::UiConfig,
     out_commands: &mut Vec<BridgeCommand>,
 ) {
-    let mode = match ctx.theme() {
-        egui::Theme::Dark => ThemeMode::Dark,
-        egui::Theme::Light => ThemeMode::Light,
-    };
-    ctx.set_visuals(theme::visuals(mode));
-    let t = theme::tokens(mode);
+    ctx.set_visuals(theme::visuals());
+    let t = theme::tokens();
     let mut root = egui::Ui::new(
         ctx.clone(),
         egui::Id::new((ctx.viewport_id(), "bridge_root_ui")),

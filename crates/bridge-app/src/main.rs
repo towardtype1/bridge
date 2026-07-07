@@ -242,6 +242,7 @@ fn run_gui(wiring: Wiring, ui_cfg: UiConfig) -> Result<(), Box<dyn std::error::E
         "Bridge",
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
+            theme::install_fonts(&cc.egui_ctx);
             wiring::spawn_repaint_forwarder(&runtime_handle, &events, Some(cc.egui_ctx.clone()));
             Ok(Box::new(BridgeApp::new(wiring, ui_cfg)))
         }),
