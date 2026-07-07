@@ -35,8 +35,40 @@ pub struct AppState {
     /// Typewriter reveal cache for the Captain dialogue. See
     /// `sync_captain_tw`.
     pub captain_tw: Option<CaptainTw>,
+    /// Typewriter reveal cache for the active hail dialogue (Tactical
+    /// escalation or Helm merge). See `sync_hail_tw`.
+    pub hail_tw: Option<HailTw>,
     /// Ephemeral widget state (text buffers, selection). Not event-driven.
     pub ui: UiInputs,
+}
+
+/// One pending item awaiting the user's answer via a hail dialogue: the
+/// oldest escalation ticket (Tactical), or - once no escalation is
+/// pending - the oldest merge proposal (Helm). Borrowed from `AppState`'s
+/// queues by `active_hail`; only one hail is ever shown at a time.
+#[derive(Debug)]
+pub enum Hail<'a> {
+    Escalation(&'a EscalationTicket),
+    Merge(&'a MergeProposal),
+}
+
+/// Typewriter reveal cache for the active hail dialogue. `key` is the
+/// escalation id or workstream id (rendered as a string) of the hail the
+/// cached `Typewriter` is revealing: a new hail (a different key) restarts
+/// the reveal from `now`.
+///
+/// Deliberately excludes the escalation countdown: the countdown ticks
+/// every second, and if it were baked into the cached body text, keying on
+/// content (or restarting every tick) would either thrash the reveal
+/// constantly or freeze the tail at whatever value it had when the
+/// typewriter was created. Keying on identity instead, and rendering the
+/// countdown as a separate label alongside the typewriter body (see
+/// `hail_dialogue`), avoids both: the reveal runs once per hail, and the
+/// countdown updates every frame regardless of reveal state.
+#[derive(Debug, Clone)]
+pub struct HailTw {
+    pub key: String,
+    pub tw: crate::dialogue::Typewriter,
 }
 
 /// Typewriter reveal cache for the Captain conference dialogue: identifies
@@ -272,6 +304,33 @@ impl AppState {
             });
         }
         self.captain_tw.as_ref()
+    }
+
+    /// The single hail awaiting an answer, if any: escalations take
+    /// priority over merge confirmations (mirrors `draw_in`'s call order,
+    /// where `escalation_modal` rendered before `merge_modal`), and within
+    /// each queue the oldest (first-arrived) item goes first. `None` when
+    /// both queues are empty.
+    pub fn active_hail(&self) -> Option<Hail<'_>> {
+        if let Some(ticket) = self.escalations.first() {
+            return Some(Hail::Escalation(ticket));
+        }
+        self.pending_merges.first().map(Hail::Merge)
+    }
+
+    /// Sync the active hail's typewriter to `key`/`body`: a new hail (a
+    /// different `key`) restarts the reveal from `now`; the same hail
+    /// persisting across frames leaves a running reveal untouched. `body`
+    /// must exclude the escalation countdown - see `HailTw`'s doc comment.
+    pub fn sync_hail_tw(&mut self, key: &str, body: String, now: f64) -> &HailTw {
+        let stale = !matches!(&self.hail_tw, Some(existing) if existing.key == key);
+        if stale {
+            self.hail_tw = Some(HailTw {
+                key: key.to_owned(),
+                tw: crate::dialogue::Typewriter::new(body, now),
+            });
+        }
+        self.hail_tw.as_ref().expect("just set above when stale")
     }
 
     /// Banner text while rate limited; None when no banner should show.
@@ -947,6 +1006,50 @@ mod tests {
         });
         let tw2 = s.sync_captain_tw(3.0).unwrap();
         assert_eq!(tw2.tw.text(), "Second.");
+        assert_eq!(
+            tw2.tw.visible(3.0, false),
+            "",
+            "freshly restarted, nothing revealed yet"
+        );
+    }
+
+    #[test]
+    fn hail_queue_prefers_escalations_then_merges_in_arrival_order() {
+        let mut s = AppState::default();
+        let m1 = proposal(WorkstreamId::new(), "v1");
+        s.apply(BridgeEvent::MergeConfirmationRequested(m1.clone()));
+        let t1 = ticket(EscalationId::new(), WorkstreamId::new());
+        s.apply(BridgeEvent::EscalationRequested(t1.clone()));
+        match s.active_hail() {
+            Some(Hail::Escalation(e)) => assert_eq!(e.id, t1.id),
+            other => panic!("expected escalation first, got {other:?}"),
+        }
+        s.apply(BridgeEvent::EscalationResolved {
+            id: t1.id,
+            decision: UserDecision::Approve,
+        });
+        assert!(matches!(s.active_hail(), Some(Hail::Merge(_))));
+    }
+
+    #[test]
+    fn hail_typewriter_restarts_only_when_the_key_changes() {
+        let mut s = AppState::default();
+        let tw1 = s.sync_hail_tw("ticket-a", "Body A.".into(), 1.0);
+        assert_eq!(tw1.tw.text(), "Body A.");
+
+        // Same key, different body (simulating a countdown-excluded body
+        // that never actually changes in practice): must not restart.
+        let tw_again = s.sync_hail_tw("ticket-a", "Body A (unused).".into(), 2.0);
+        assert_eq!(
+            tw_again.tw.text(),
+            "Body A.",
+            "same key leaves the running reveal untouched"
+        );
+        assert_eq!(tw_again.tw.visible(2.0, false), "Body A.");
+
+        // A different key (a new hail) restarts the reveal from `now`.
+        let tw2 = s.sync_hail_tw("ticket-b", "Body B.".into(), 3.0);
+        assert_eq!(tw2.tw.text(), "Body B.");
         assert_eq!(
             tw2.tw.visible(3.0, false),
             "",

@@ -20,7 +20,13 @@
 //!   floating HAIL THE CAPTAIN button (`Area`, `CENTER_BOTTOM`) opens it when
 //!   no dialogue is already open; there is no bottom composer anymore.
 //! - Conditional top banners: paused (rate-limit / budget) and compat warning.
-//! - Modals (`Window`): escalation and merge confirmation.
+//! - Hails: an escalation ticket or a merge proposal opens `hail_dialogue`,
+//!   the same shared `dialogue_box` chrome as the Captain conference
+//!   (Speaker::Tactical / Speaker::Helm respectively). Auto-open from
+//!   pending state (no button needed) and have no close button - they
+//!   demand an answer; the fail-closed timeout still runs controller-side.
+//!   One at a time (`AppState::active_hail`: escalations before merges),
+//!   replaces the old `escalation_modal`/`merge_modal` `Window`s.
 //!
 //! Depth is hairline + grouped fill, never shadow (disabled in `theme`).
 //! Only the mission/working dots animate, and only while work is live.
@@ -32,13 +38,14 @@
 use crate::dialogue;
 use crate::pixel::{self, ChipKind};
 use crate::state::{
-    AppState, CaptainSpeaker, escalation_remaining_secs, format_duration_secs, mission_state_label,
-    status_label,
+    AppState, CaptainSpeaker, Hail, escalation_remaining_secs, format_duration_secs,
+    mission_state_label, status_label,
 };
 use crate::theme::{self, Tokens};
 use bridge_core::{
-    BridgeCommand, BudgetExtension, BudgetSnapshot, DecisionKind, LogLevel, MergeQueueState,
-    MissionState, PauseReason, UserDecision, Verdict, WorkstreamId, WorkstreamStatus,
+    BridgeCommand, BudgetExtension, BudgetSnapshot, DecisionKind, EscalationTicket, LogLevel,
+    MergeProposal, MergeQueueState, MissionState, PauseReason, UserDecision, Verdict, WorkstreamId,
+    WorkstreamStatus,
 };
 use chrono::Utc;
 use egui::{Align, Align2, Color32, Layout, RichText};
@@ -79,8 +86,12 @@ fn draw_in(
     paused_banner(ui, t, state, out);
     compat_banner(ui, t, state);
     center(ui, t, state, deck, textures, ui_cfg, out);
-    escalation_modal(&ctx, t, state, out);
-    merge_modal(&ctx, t, state, out);
+    // `deck.last_rect` is set by `center`'s call to `draw_deck` earlier this
+    // same frame, exactly as `center` itself reads it for `captain_dialogue`.
+    let deck_rect = deck
+        .last_rect
+        .unwrap_or_else(|| dialogue::fallback_deck_rect(&ctx));
+    hail_dialogue(&ctx, t, state, textures, deck_rect, ui_cfg, out);
 
     // A ticking repaint keeps countdowns and the live-work pulse moving even
     // without incoming events; idle windows stay static.
@@ -503,10 +514,12 @@ fn center(
 
 /// Whether any RPG dialogue is currently open: gates the floating HAIL
 /// button so it never competes with an open dialogue for the same
-/// bottom-anchored screen space. Task 6 extends this with the Tactical and
-/// Helm hail dialogues.
+/// bottom-anchored screen space. True while the Captain conference is open,
+/// or while a hail (escalation/merge, see `AppState::active_hail`) is
+/// pending - a hail auto-opens from state, so this check alone is enough to
+/// hide the button without the hail needing its own open flag.
 fn any_dialogue_open(state: &AppState) -> bool {
-    state.ui.open_captain
+    state.ui.open_captain || state.active_hail().is_some()
 }
 
 /// Selecting a console on the deck opens this window; closing it (the
@@ -942,6 +955,7 @@ fn captain_dialogue(
         t,
         "captain_dialogue",
         dialogue::Speaker::Captain,
+        true,
         &tw,
         now,
         reduce_motion,
@@ -1198,96 +1212,145 @@ fn spawn_editor(editor_command: &str, path: &std::path::Path) {
     }
 }
 
-// -- modals -------------------------------------------------------------------
+// -- hails --------------------------------------------------------------------
 
-fn window_frame(t: &Tokens) -> egui::Frame {
-    egui::Frame::new()
-        .fill(t.surface)
-        .stroke(egui::Stroke::new(1.0, t.hair))
-        .corner_radius(13)
-        .inner_margin(egui::Margin::symmetric(20, 18))
+/// One hail at a time from `AppState::active_hail`: an escalation ticket
+/// (Tactical) takes priority over a merge proposal (Helm), matching the
+/// call order the modals they replace used to render in. Hails auto-open
+/// from pending state - no button, no `open_*` flag - and have no close
+/// button in practice: `dialogue_box` always renders its corner CLOSE (it's
+/// shared chrome with the Captain conference, which does close), but
+/// neither `escalation_hail` nor `merge_hail` reads `resp.closed`, so
+/// clicking it is a no-op here. A hail demands an answer; the fail-closed
+/// timeout that auto-denies an expired escalation still runs
+/// controller-side regardless of what's on screen.
+fn hail_preempts_captain(state: &mut AppState) {
+    if state.active_hail().is_some() {
+        // A hail demands an answer and preempts the Captain conference.
+        state.ui.open_captain = false;
+    }
 }
 
-fn escalation_modal(
+fn hail_dialogue(
     ctx: &egui::Context,
     t: &Tokens,
     state: &mut AppState,
+    textures: &mut crate::DialogueTextures,
+    deck_rect: egui::Rect,
+    ui_cfg: &bridge_core::UiConfig,
     out: &mut Vec<BridgeCommand>,
 ) {
-    let Some(ticket) = state.escalations.first().cloned() else {
-        return;
-    };
-    let more_pending = state.escalations.len() - 1;
-    let mut decision: Option<UserDecision> = None;
-    egui::Window::new(
-        RichText::new("Escalation")
-            .color(t.text)
-            .size(15.0)
-            .strong(),
-    )
-    .collapsible(false)
-    .resizable(false)
-    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-    .frame(window_frame(t))
-    .show(ctx, |ui| {
-        ui.label(
-            RichText::new(&ticket.question)
-                .color(t.text)
-                .size(15.0)
-                .strong(),
-        );
-        ui.add_space(8.0);
-        if let Some(tool) = &ticket.tool_name {
-            ui.label(RichText::new(tool).color(t.text_2).size(12.5).monospace());
+    let now = ctx.input(|i| i.time);
+    hail_preempts_captain(state);
+    match state.active_hail() {
+        Some(Hail::Escalation(ticket)) => {
+            let ticket = ticket.clone();
+            escalation_hail(ctx, t, state, textures, deck_rect, ui_cfg, now, ticket, out);
         }
-        ui.label(
-            RichText::new(&ticket.tool_input_summary)
-                .color(t.text_3)
-                .size(12.0)
-                .monospace(),
-        );
-        ui.add_space(8.0);
-        let remaining = escalation_remaining_secs(&ticket, Utc::now());
-        ui.label(
-            RichText::new(format!(
-                "Auto-deny in {}",
-                format_duration_secs(remaining as u64)
-            ))
-            .color(t.crit)
-            .size(12.5),
-        );
-        ui.add_space(10.0);
-        let reason = state.ui.deny_reasons.entry(ticket.id).or_default();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Deny reason").color(t.text_2).size(12.0));
-            ui.text_edit_singleline(reason);
-        });
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add(egui::Button::new(RichText::new("Approve").color(Color32::WHITE)).fill(t.good))
-                .clicked()
-            {
-                decision = Some(UserDecision::Approve);
-            }
-            if ui
-                .add(egui::Button::new(RichText::new("Deny").color(Color32::WHITE)).fill(t.crit))
-                .clicked()
-            {
-                decision = Some(UserDecision::Deny {
-                    reason: reason.clone(),
-                });
-            }
-        });
-        if more_pending > 0 {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!("{more_pending} more pending"))
-                    .color(t.text_3)
-                    .size(11.0),
+        Some(Hail::Merge(proposal)) => {
+            let proposal = proposal.clone();
+            merge_hail(
+                ctx, t, state, textures, deck_rect, ui_cfg, now, proposal, out,
             );
         }
-    });
+        None => {}
+    }
+}
+
+/// Tactical hails an escalation: same fields `escalation_modal` used to
+/// render (`question`, `tool_name`, `tool_input_summary`), reworded into
+/// one narration line, plus the live countdown. The countdown is rendered
+/// as its own label *outside* the typewriter body (see `HailTw`'s doc
+/// comment on `state.rs`): it ticks every second, and baking it into the
+/// cached body would either restart the reveal every tick (if keyed on
+/// content) or freeze the tail at whatever value it had when the
+/// typewriter was created (if keyed on identity, as this is) - rendering it
+/// separately sidesteps both.
+#[allow(clippy::too_many_arguments)]
+fn escalation_hail(
+    ctx: &egui::Context,
+    t: &Tokens,
+    state: &mut AppState,
+    textures: &mut crate::DialogueTextures,
+    deck_rect: egui::Rect,
+    ui_cfg: &bridge_core::UiConfig,
+    now: f64,
+    ticket: EscalationTicket,
+    out: &mut Vec<BridgeCommand>,
+) {
+    let more_pending = state.escalations.len() - 1;
+    let tool_prefix = ticket
+        .tool_name
+        .as_deref()
+        .map(|name| format!("{name}: "))
+        .unwrap_or_default();
+    let body = format!(
+        "Tactical requests: {}. {}{}. Standing orders do not cover this. No answer means DENY.",
+        ticket.question, tool_prefix, ticket.tool_input_summary
+    );
+    let key = ticket.id.to_string();
+    let tw = state.sync_hail_tw(&key, body, now).tw.clone();
+    let reduce_motion = ui_cfg.reduce_motion;
+
+    let mut decision: Option<UserDecision> = None;
+    let reason = state.ui.deny_reasons.entry(ticket.id).or_default();
+    let resp = dialogue::dialogue_box(
+        ctx,
+        t,
+        "escalation_hail",
+        dialogue::Speaker::Tactical,
+        false,
+        &tw,
+        now,
+        reduce_motion,
+        deck_rect,
+        &mut textures.tactical,
+        |ui| {
+            let remaining = escalation_remaining_secs(&ticket, Utc::now());
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("T-minus {}s.", remaining))
+                    .font(theme::crt(17.0))
+                    .color(t.crit),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("REASON")
+                    .font(theme::crt(17.0))
+                    .color(t.text_2),
+            );
+            ui.add(
+                egui::TextEdit::singleline(reason)
+                    .font(theme::crt(17.0))
+                    .desired_width(ui.available_width()),
+            );
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if pixel::pixel_button(ui, t, "APPROVE ONCE", t.good).clicked() {
+                    decision = Some(UserDecision::Approve);
+                }
+                if pixel::pixel_button(ui, t, "DENY", t.crit).clicked() {
+                    decision = Some(UserDecision::Deny {
+                        reason: reason.clone(),
+                    });
+                }
+            });
+            if more_pending > 0 {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!("{more_pending} more pending"))
+                        .color(t.text_3)
+                        .size(11.0),
+                );
+            }
+        },
+    );
+
+    if resp.text_clicked
+        && let Some(cached) = state.hail_tw.as_mut()
+    {
+        cached.tw.complete();
+    }
     if let Some(decision) = decision {
         out.push(BridgeCommand::ResolveEscalation {
             id: ticket.id,
@@ -1297,61 +1360,73 @@ fn escalation_modal(
     }
 }
 
-fn merge_modal(
+/// Helm hails a merge proposal: same fields `merge_modal` used to render
+/// (`branch`, `target`, `summary`, `diff_stat`), reworded into one
+/// narration line plus a monospace diff-stat caption (unlike the
+/// escalation countdown, `diff_stat` is static for a given proposal, so
+/// there's no reason to keep it out of the typewriter body other than
+/// visual grouping - shown as its own line, same as the modal did).
+#[allow(clippy::too_many_arguments)]
+fn merge_hail(
     ctx: &egui::Context,
     t: &Tokens,
     state: &mut AppState,
+    textures: &mut crate::DialogueTextures,
+    deck_rect: egui::Rect,
+    ui_cfg: &bridge_core::UiConfig,
+    now: f64,
+    proposal: MergeProposal,
     out: &mut Vec<BridgeCommand>,
 ) {
-    let Some(proposal) = state.pending_merges.first().cloned() else {
-        return;
-    };
+    let body = format!(
+        "Workstream {} requests permission to dock. Branch {} rebased clean, targeting {}. {}",
+        short_id(&proposal.workstream),
+        proposal.branch,
+        proposal.target,
+        proposal.summary
+    );
+    let key = proposal.workstream.to_string();
+    let tw = state.sync_hail_tw(&key, body, now).tw.clone();
+    let reduce_motion = ui_cfg.reduce_motion;
+
     let mut approved: Option<bool> = None;
-    egui::Window::new(
-        RichText::new("Confirm merge")
-            .color(t.text)
-            .size(15.0)
-            .strong(),
-    )
-    .collapsible(false)
-    .resizable(false)
-    .anchor(Align2::CENTER_CENTER, egui::vec2(0.0, 40.0))
-    .frame(window_frame(t))
-    .show(ctx, |ui| {
-        ui.label(
-            RichText::new(format!("{} -> {}", proposal.branch, proposal.target))
-                .color(t.text)
-                .size(14.0)
-                .monospace(),
-        );
-        ui.add_space(8.0);
-        ui.label(RichText::new(&proposal.summary).color(t.text_2).size(13.0));
-        ui.add_space(8.0);
-        ui.label(
-            RichText::new(&proposal.diff_stat)
-                .color(t.text_3)
-                .size(12.0)
-                .monospace(),
-        );
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Confirm").color(Color32::WHITE))
-                        .fill(t.accent),
-                )
-                .clicked()
-            {
-                approved = Some(true);
+    let resp = dialogue::dialogue_box(
+        ctx,
+        t,
+        "merge_hail",
+        dialogue::Speaker::Helm,
+        false,
+        &tw,
+        now,
+        reduce_motion,
+        deck_rect,
+        &mut textures.helm,
+        |ui| {
+            if !proposal.diff_stat.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(&proposal.diff_stat)
+                        .font(theme::crt(17.0))
+                        .color(t.text_3),
+                );
             }
-            if ui
-                .add(egui::Button::new(RichText::new("Reject").color(t.text)).fill(t.fill))
-                .clicked()
-            {
-                approved = Some(false);
-            }
-        });
-    });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if pixel::pixel_button(ui, t, "ENGAGE", t.good).clicked() {
+                    approved = Some(true);
+                }
+                if pixel::pixel_button(ui, t, "HOLD", t.info).clicked() {
+                    approved = Some(false);
+                }
+            });
+        },
+    );
+
+    if resp.text_clicked
+        && let Some(cached) = state.hail_tw.as_mut()
+    {
+        cached.tw.complete();
+    }
     if let Some(approved) = approved {
         out.push(BridgeCommand::ConfirmMerge {
             workstream: proposal.workstream,
@@ -1386,5 +1461,44 @@ mod tests {
         // the conference; it's a stock `egui::Window` like the others).
         apply_deck_action(&mut state, crate::deck::DeckAction::HailCaptain);
         assert!(state.ui.open_captain);
+    }
+
+    #[test]
+    fn hail_preempts_captain_when_escalation_pending() {
+        use bridge_core::{EscalationId, EscalationTicket};
+        use chrono::{Duration, Utc};
+
+        let mut state = AppState::default();
+        state.ui.open_captain = true;
+
+        // Add an escalation ticket
+        let ticket = EscalationTicket {
+            id: EscalationId::new(),
+            workstream: bridge_core::WorkstreamId::new(),
+            question: "allow push?".into(),
+            tool_name: Some("Bash".into()),
+            tool_input_summary: "git push".into(),
+            requested_at: Utc::now(),
+            expires_at: Utc::now() + Duration::seconds(540),
+        };
+        state.escalations.push(ticket);
+
+        hail_preempts_captain(&mut state);
+        assert!(
+            !state.ui.open_captain,
+            "hail should preempt Captain dialogue"
+        );
+    }
+
+    #[test]
+    fn hail_preempts_captain_stays_true_when_no_hail() {
+        let mut state = AppState::default();
+        state.ui.open_captain = true;
+
+        hail_preempts_captain(&mut state);
+        assert!(
+            state.ui.open_captain,
+            "Captain dialogue should stay open when no hail"
+        );
     }
 }

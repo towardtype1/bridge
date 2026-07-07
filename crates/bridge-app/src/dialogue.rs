@@ -163,6 +163,7 @@ pub fn dialogue_box(
     t: &Tokens,
     id: &str,
     speaker: Speaker,
+    closable: bool,
     tw: &Typewriter,
     now: f64,
     reduce_motion: bool,
@@ -188,7 +189,7 @@ pub fn dialogue_box(
 
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
+                            if closable && pixel::pixel_button(ui, t, "CLOSE", t.info).clicked() {
                                 response.closed = true;
                             }
                         });
@@ -310,6 +311,7 @@ mod tests {
                 &t,
                 "test_dialogue",
                 Speaker::Captain,
+                true,
                 &tw,
                 0.0,
                 true,

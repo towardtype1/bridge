@@ -141,9 +141,7 @@ fn load_config(
 #[derive(Default)]
 pub struct DialogueTextures {
     pub captain: Option<egui::TextureHandle>,
-    #[allow(dead_code)] // wired up in Task 6 (Tactical hail)
     pub tactical: Option<egui::TextureHandle>,
-    #[allow(dead_code)] // wired up in Task 6 (Helm hail)
     pub helm: Option<egui::TextureHandle>,
 }
 
