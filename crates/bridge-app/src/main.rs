@@ -25,6 +25,7 @@
 //! Complete (0) or Failed (1).
 
 mod deck;
+mod pixel;
 mod state;
 mod theme;
 mod ui;
