@@ -1,8 +1,6 @@
 //! Reusable pixel-chrome widgets: console frames, station headers, chips,
 //! and pixel buttons. Pure presentation over theme::Tokens.
 
-#![allow(dead_code)] // consumed by Tasks 3-6; remove in Task 7
-
 use crate::theme::{self, Tokens};
 use eframe::egui;
 use egui::{Color32, RichText};
@@ -73,7 +71,7 @@ pub fn console_frame(t: &Tokens) -> egui::Frame {
         .inner_margin(14)
 }
 
-/// The mockup's outer hairline, 3 px outside the frame.
+/// The mockup's outer hairline, 5 px outside the frame.
 pub fn double_outline(ui: &mut egui::Ui, t: &Tokens) {
     let r = ui.max_rect().expand(5.0);
     ui.painter().rect_stroke(

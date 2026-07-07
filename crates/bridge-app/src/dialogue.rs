@@ -2,8 +2,6 @@
 //! reused by the Captain conference, Tactical escalation hails, and Helm
 //! merge hails.
 
-#![allow(dead_code)] // consumed by Tasks 5-6; remove in Task 7
-
 use crate::deck::scene::{NATIVE_H, NATIVE_W};
 use crate::deck::sprites::{PORTRAIT, PortraitSpeaker, portrait_color};
 use crate::pixel;
@@ -49,10 +47,6 @@ impl Typewriter {
 
     pub fn complete(&mut self) {
         self.done = true;
-    }
-
-    pub fn text(&self) -> &str {
-        &self.text
     }
 }
 

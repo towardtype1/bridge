@@ -984,7 +984,7 @@ mod tests {
             text: "First.".into(),
         });
         let tw1 = s.sync_captain_tw(1.0).unwrap();
-        assert_eq!(tw1.tw.text(), "First.");
+        assert_eq!(tw1.tw.visible(0.0, true), "First.");
 
         // A `You` line grows the feed but isn't a new Captain message: the
         // running reveal must not restart. If it had restarted, `started`
@@ -996,7 +996,7 @@ mod tests {
             text: "go on".into(),
         });
         let tw_after_user = s.sync_captain_tw(2.0).unwrap();
-        assert_eq!(tw_after_user.tw.text(), "First.");
+        assert_eq!(tw_after_user.tw.visible(0.0, true), "First.");
         assert_eq!(tw_after_user.tw.visible(2.0, false), "First.");
 
         // A genuinely new Captain message restarts the reveal from `now`.
@@ -1005,7 +1005,7 @@ mod tests {
             text: "Second.".into(),
         });
         let tw2 = s.sync_captain_tw(3.0).unwrap();
-        assert_eq!(tw2.tw.text(), "Second.");
+        assert_eq!(tw2.tw.visible(0.0, true), "Second.");
         assert_eq!(
             tw2.tw.visible(3.0, false),
             "",
@@ -1035,13 +1035,13 @@ mod tests {
     fn hail_typewriter_restarts_only_when_the_key_changes() {
         let mut s = AppState::default();
         let tw1 = s.sync_hail_tw("ticket-a", "Body A.".into(), 1.0);
-        assert_eq!(tw1.tw.text(), "Body A.");
+        assert_eq!(tw1.tw.visible(0.0, true), "Body A.");
 
         // Same key, different body (simulating a countdown-excluded body
         // that never actually changes in practice): must not restart.
         let tw_again = s.sync_hail_tw("ticket-a", "Body A (unused).".into(), 2.0);
         assert_eq!(
-            tw_again.tw.text(),
+            tw_again.tw.visible(0.0, true),
             "Body A.",
             "same key leaves the running reveal untouched"
         );
@@ -1049,7 +1049,7 @@ mod tests {
 
         // A different key (a new hail) restarts the reveal from `now`.
         let tw2 = s.sync_hail_tw("ticket-b", "Body B.".into(), 3.0);
-        assert_eq!(tw2.tw.text(), "Body B.");
+        assert_eq!(tw2.tw.visible(0.0, true), "Body B.");
         assert_eq!(
             tw2.tw.visible(3.0, false),
             "",

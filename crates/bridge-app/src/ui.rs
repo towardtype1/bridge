@@ -240,14 +240,18 @@ fn paused_banner(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<
         return;
     };
     let frame = egui::Frame::new()
-        .fill(theme::tint(t.warn, t.bg, 0.14))
+        .fill(theme::tint(t.warn, t.bg, 0.15))
         .inner_margin(egui::Margin::symmetric(20, 10));
-    egui::Panel::top("paused_banner")
+    let resp = egui::Panel::top("paused_banner")
         .frame(frame)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                dot(ui, t.warn, false);
-                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("PAUSED")
+                        .font(theme::pixel(9.0))
+                        .color(t.warn),
+                );
+                ui.add_space(10.0);
                 match &reason {
                     PauseReason::RateLimited { retry_at } => {
                         let text =
@@ -262,22 +266,16 @@ fn paused_banner(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<
                                     }
                                     None => "Rate limited - waiting for reset".to_owned(),
                                 });
-                        ui.label(RichText::new(text).color(t.warn).strong());
+                        ui.label(RichText::new(text).font(theme::crt(17.0)).color(t.text));
                     }
                     PauseReason::BudgetExhausted { which } => {
                         ui.label(
-                            RichText::new(format!("Paused - budget exhausted ({which})"))
-                                .color(t.warn)
-                                .strong(),
+                            RichText::new(format!("Budget exhausted ({which})"))
+                                .font(theme::crt(17.0))
+                                .color(t.text),
                         );
                         ui.add_space(10.0);
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new("+20 turns").color(t.accent))
-                                    .fill(t.fill),
-                            )
-                            .clicked()
-                        {
+                        if pixel::pixel_button(ui, t, "+20 TURNS", t.accent).clicked() {
                             out.push(BridgeCommand::ExtendBudget(BudgetExtension {
                                 extra_total_turns: 20,
                                 ..BudgetExtension::default()
@@ -286,14 +284,19 @@ fn paused_banner(ui: &mut egui::Ui, t: &Tokens, state: &AppState, out: &mut Vec<
                     }
                     PauseReason::UserRequested => {
                         ui.label(
-                            RichText::new("Paused - user requested")
-                                .color(t.warn)
-                                .strong(),
+                            RichText::new("User requested")
+                                .font(theme::crt(17.0))
+                                .color(t.text),
                         );
                     }
                 }
             });
         });
+    ui.painter().hline(
+        resp.response.rect.x_range(),
+        resp.response.rect.bottom(),
+        egui::Stroke::new(1.0, t.warn),
+    );
 }
 
 fn compat_banner(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
@@ -301,30 +304,36 @@ fn compat_banner(ui: &mut egui::Ui, t: &Tokens, state: &mut AppState) {
         return;
     };
     let frame = egui::Frame::new()
-        .fill(theme::tint(t.warn, t.bg, 0.14))
+        .fill(theme::tint(t.crit, t.bg, 0.15))
         .inner_margin(egui::Margin::symmetric(20, 10));
-    egui::Panel::top("compat_banner")
+    let resp = egui::Panel::top("compat_banner")
         .frame(frame)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                dot(ui, t.warn, false);
-                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("COMPAT")
+                        .font(theme::pixel(9.0))
+                        .color(t.crit),
+                );
+                ui.add_space(10.0);
                 ui.label(
                     RichText::new(format!(
                         "claude {detected} is outside the tested range {min} - {max}"
                     ))
-                    .color(t.warn)
-                    .strong(),
+                    .font(theme::crt(17.0))
+                    .color(t.text),
                 );
                 ui.add_space(10.0);
-                if ui
-                    .add(egui::Button::new("Proceed anyway").fill(t.fill))
-                    .clicked()
-                {
+                if pixel::pixel_button(ui, t, "PROCEED ANYWAY", t.crit).clicked() {
                     state.compat_warning = None;
                 }
             });
         });
+    ui.painter().hline(
+        resp.response.rect.x_range(),
+        resp.response.rect.bottom(),
+        egui::Stroke::new(1.0, t.crit),
+    );
 }
 
 // -- mission status -----------------------------------------------------------

@@ -10,11 +10,6 @@ use eframe::egui::{self, Color32};
 pub struct Tokens {
     pub bg: Color32,
     pub surface: Color32,
-    // No current consumer: the composer (its last reader) was retired in
-    // Task 5. Kept for `Tokens`' struct-shape parity per the plan; Task 7's
-    // sweep decides whether a future caller claims it or it's dropped.
-    #[allow(dead_code)]
-    pub surface_2: Color32,
     pub sidebar: Color32,
     pub text: Color32,
     pub text_2: Color32,
@@ -42,7 +37,6 @@ pub fn tokens() -> Tokens {
     Tokens {
         bg: rgb(0x06, 0x08, 0x11),
         surface: rgb(0x0e, 0x13, 0x22),
-        surface_2: rgb(0x12, 0x19, 0x33),
         sidebar: rgb(0x12, 0x19, 0x33),
         text: rgb(0xc9, 0xd4, 0xe8),
         text_2: rgb(0x7c, 0x89, 0xa6),
@@ -128,12 +122,10 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-#[allow(dead_code)] // consumed by Tasks C2-C6; remove the allow in Task C7
 pub fn pixel(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("pixel".into()))
 }
 
-#[allow(dead_code)] // consumed by Tasks C2-C6; remove the allow in Task C7
 pub fn crt(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("crt".into()))
 }
